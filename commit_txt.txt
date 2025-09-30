@@ -1,0 +1,20 @@
+feat: Initial implementation of URL Video Clip Downloader
+
+This commit introduces the initial version of the URL Video Clip Downloader, a GUI application for downloading video clips from various URLs.
+
+Key features implemented:
+- Core downloading and clipping logic using yt-dlp and ffmpeg.
+- Tkinter-based graphical user interface for user input.
+- Support for specifying start/end times for video segments.
+- A sequential download queue to process one download at a time.
+- Progress bar and status updates for download monitoring.
+- Error handling for invalid URLs and download failures.
+- Automatic filename numbering for existing files.
+
+Project structure:
+- `src/`: Contains the main application logic, GUI, and downloader modules.
+- `tests/`: Includes unit tests for the downloader logic.
+- `specs/`: Contains the project specification and design documents.
+- `.gitignore`: Excludes tool-specific directories.
+- `README.md`: Provides an overview of the project and usage instructions.
+- `requirements.txt`: Lists the project dependencies.
