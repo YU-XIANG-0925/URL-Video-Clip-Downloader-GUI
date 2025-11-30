@@ -4,6 +4,21 @@ import subprocess
 import yt_dlp
 import os
 from typing import Callable
+import datetime
+
+def log_error(error_message: str):
+    """Appends a timestamped error message to the .error_log/errors.log file."""
+    log_dir = ".error_log"
+    log_file = os.path.join(log_dir, "errors.log")
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        # Ensure the log directory exists
+        os.makedirs(log_dir, exist_ok=True)
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(f"[{timestamp}] {error_message}\n")
+    except Exception as e:
+        # If logging itself fails, print to stderr as a fallback
+        print(f"Failed to write to log file: {e}")
 
 class DownloadStatus(Enum):
     QUEUED = "queued"
@@ -19,6 +34,9 @@ class DownloadJob:
     end_time: str
     output_path: str
     output_filename: str
+    video_codec: str | None = None
+    audio_codec: str | None = None
+    container_format: str | None = None
     status: DownloadStatus = DownloadStatus.QUEUED
     progress: int = 0
     progress_hook: Callable = None
@@ -26,9 +44,19 @@ class DownloadJob:
 def start_download(job: DownloadJob):
     job.status = DownloadStatus.DOWNLOADING
     if job.progress_hook:
-        job.progress_hook({'status': 'downloading', 'info': 'Starting download...'})
+        job.progress_hook({'status': 'downloading', 'info': 'Starting process...'}) 
 
-    output_full_path = os.path.join(job.output_path, job.output_filename)
+    # Construct filename with correct extension based on container format
+    container_ext = job.container_format if job.container_format else "mp4"
+    if not container_ext.startswith('.'):
+        container_ext = '.' + container_ext
+    
+    if job.output_filename.lower().endswith(container_ext):
+        final_filename = job.output_filename
+    else:
+        final_filename = job.output_filename + container_ext
+
+    output_full_path = os.path.join(job.output_path, final_filename)
     
     # Handle existing files
     base, ext = os.path.splitext(output_full_path)
@@ -38,9 +66,20 @@ def start_download(job: DownloadJob):
         i += 1
 
     try:
-        if job.start_time and job.end_time:
+        # Check if the URL is a local file path
+        is_local_file = os.path.exists(job.url)
+
+        if is_local_file:
+            # --- LOGIC FOR LOCAL FILES ---
+            if not (job.start_time and job.end_time):
+                raise Exception("For local files, both start and end time are required for clipping.")
+
+            job.status = DownloadStatus.PROCESSING
+            if job.progress_hook:
+                job.progress_hook({'status': 'processing', 'info': 'Clipping local file...'}) 
+            
             try:
-                # Try with ffmpeg first for direct clipping
+                # Use ffmpeg to clip the local file
                 command = [
                     'ffmpeg',
                     '-i', job.url,
@@ -49,45 +88,85 @@ def start_download(job: DownloadJob):
                     '-c', 'copy',
                     output_full_path
                 ]
-                subprocess.run(command, check=True, capture_output=True)
-                if job.progress_hook:
-                    job.progress_hook({'status': 'finished', 'info': 'Download finished.'})
+                # Use text=True for better error messages
+                result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore')
                 job.status = DownloadStatus.COMPLETED
+                if job.progress_hook:
+                    job.progress_hook({'status': 'finished', 'info': 'Clipping finished.'}) 
                 return
             except FileNotFoundError:
                 raise Exception("ffmpeg not found. Please install ffmpeg and add it to your PATH.")
             except subprocess.CalledProcessError as e:
-                # If ffmpeg fails, fall back to yt-dlp
-                pass
+                # Provide more detailed error from ffmpeg
+                raise Exception(f"ffmpeg error during clipping: {e.stderr}")
 
-        # Use yt-dlp
-        ydl_opts = {
-            'outtmpl': output_full_path,
-            'progress_hooks': [job.progress_hook] if job.progress_hook else [],
-        }
-        if job.start_time or job.end_time:
+        else:
+            # --- LOGIC FOR URLS (Original Logic) ---
+            if job.start_time and job.end_time:
+                try:
+                    # Try with ffmpeg first for direct stream clipping
+                    command = [
+                        'ffmpeg',
+                        '-i', job.url,
+                        '-ss', job.start_time,
+                        '-to', job.end_time,
+                        '-c', 'copy',
+                        output_full_path
+                    ]
+                    subprocess.run(command, check=True, capture_output=True)
+                    if job.progress_hook:
+                        job.progress_hook({'status': 'finished', 'info': 'Download finished.'}) 
+                    job.status = DownloadStatus.COMPLETED
+                    return
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    # If ffmpeg fails (not found or error on stream), fall back to yt-dlp
+                    pass
+
+            # Use yt-dlp for downloading and/or clipping
+            ydl_opts = {
+                'outtmpl': output_full_path,
+                'progress_hooks': [job.progress_hook] if job.progress_hook else [],
+            }
+
             postprocessor_args = []
             if job.start_time:
                 postprocessor_args.extend(['-ss', job.start_time])
             if job.end_time:
                 postprocessor_args.extend(['-to', job.end_time])
-            ydl_opts['postprocessor_args'] = postprocessor_args
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }]
+            
+            # Add codec options if they are not 'copy'
+            if job.video_codec and job.video_codec != 'copy':
+                postprocessor_args.extend(['-c:v', job.video_codec])
+            elif job.video_codec == 'copy':
+                postprocessor_args.extend(['-c:v', 'copy'])
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([job.url])
-        job.status = DownloadStatus.COMPLETED
-        if job.progress_hook:
-            job.progress_hook({'status': 'finished', 'info': 'Download finished.'})
+            if job.audio_codec and job.audio_codec != 'copy':
+                postprocessor_args.extend(['-c:a', job.audio_codec])
+            elif job.audio_codec == 'copy':
+                postprocessor_args.extend(['-c:a', 'copy'])
+
+            if postprocessor_args: # If there are any post-processing args, add the convertor
+                ydl_opts['postprocessors'] = [{
+                    'key': 'FFmpegVideoConvertor',
+                    'preferedformat': job.container_format or 'mp4',
+                }]
+                ydl_opts['postprocessor_args'] = postprocessor_args
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([job.url])
+            job.status = DownloadStatus.COMPLETED
+            if job.progress_hook:
+                job.progress_hook({'status': 'finished', 'info': 'Download finished.'}) 
 
     except yt_dlp.utils.DownloadError as e:
+        error_msg = str(e)
+        log_error(error_msg)
         job.status = DownloadStatus.FAILED
         if job.progress_hook:
-            job.progress_hook({'status': 'error', 'info': str(e)})
+            job.progress_hook({'status': 'error', 'info': error_msg})
     except Exception as e:
+        error_msg = str(e)
+        log_error(error_msg)
         job.status = DownloadStatus.FAILED
         if job.progress_hook:
-            job.progress_hook({'status': 'error', 'info': str(e)})
+            job.progress_hook({'status': 'error', 'info': error_msg})
