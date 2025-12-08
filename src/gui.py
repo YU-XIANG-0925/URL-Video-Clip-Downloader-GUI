@@ -7,12 +7,14 @@ from downloader import DownloadJob, start_download
 from reencoder import reencode_video
 from merger import merge_videos
 from task_utils import TaskController
+from constants import VIDEO_CODECS, AUDIO_CODECS, CONTAINER_FORMATS, MERGE_VIDEO_EXTENSIONS, MERGE_CONTAINER_FORMATS
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("URL Video Clip Downloader")
-        self.geometry("600x450") # Increased height for new buttons
+        self.geometry("900x450") # Adjusted width to 900
+
 
         # Task Controllers
         self.dl_controller = None
@@ -88,7 +90,7 @@ class App(tk.Tk):
         # Output Container (optional, for extension)
         self.merge_container_label = ttk.Label(self.tab3, text="Output Format:")
         self.merge_container_label.grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
-        self.merge_containers = ["mp4", "mkv", "mov", "avi", "ts"]
+        self.merge_containers = MERGE_CONTAINER_FORMATS
         self.merge_container_var = tk.StringVar(self.tab3)
         self.merge_container_var.set(self.merge_containers[0])
         self.merge_container_option = ttk.OptionMenu(self.tab3, self.merge_container_var, self.merge_containers[0], *self.merge_containers)
@@ -200,8 +202,7 @@ class App(tk.Tk):
             try:
                 files = sorted([os.path.join(input_dir, f) for f in os.listdir(input_dir) if os.path.isfile(os.path.join(input_dir, f))])
                 # Basic filter for video extensions?
-                video_exts = ('.mp4', '.mkv', '.mov', '.avi', '.ts', '.flv', '.webm')
-                input_files = [f for f in files if f.lower().endswith(video_exts)]
+                input_files = [f for f in files if f.lower().endswith(tuple(MERGE_VIDEO_EXTENSIONS))]
                 
                 if not input_files:
                      messagebox.showerror("Error", "No video files found in directory.")
@@ -281,7 +282,7 @@ class App(tk.Tk):
         # Video Codec
         self.video_codec_label = ttk.Label(self.tab1, text="Video Codec:")
         self.video_codec_label.grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        self.video_codecs = ["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "libx264", "vp9", "mpeg4", "copy"]
+        self.video_codecs = VIDEO_CODECS
         self.video_codec_var = tk.StringVar(self.tab1)
         self.video_codec_var.set(self.video_codecs[0]) # Default to hevc_nvenc
         self.video_codec_option = ttk.OptionMenu(self.tab1, self.video_codec_var, self.video_codecs[0], *self.video_codecs)
@@ -290,7 +291,7 @@ class App(tk.Tk):
         # Audio Codec
         self.audio_codec_label = ttk.Label(self.tab1, text="Audio Codec:")
         self.audio_codec_label.grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
-        self.audio_codecs = ["aac", "opus", "libmp3lame", "copy"]
+        self.audio_codecs = AUDIO_CODECS
         self.audio_codec_var = tk.StringVar(self.tab1)
         self.audio_codec_var.set(self.audio_codecs[0]) # Default to aac
         self.audio_codec_option = ttk.OptionMenu(self.tab1, self.audio_codec_var, self.audio_codecs[0], *self.audio_codecs)
@@ -299,7 +300,7 @@ class App(tk.Tk):
         # Container Format
         self.container_format_label = ttk.Label(self.tab1, text="Container Format:")
         self.container_format_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        self.container_formats = ["mp4", "mkv", "mov", "avi"]
+        self.container_formats = CONTAINER_FORMATS
         self.container_format_var = tk.StringVar(self.tab1)
         self.container_format_var.set(self.container_formats[0]) # Default to mp4
         self.container_format_option = ttk.OptionMenu(self.tab1, self.container_format_var, self.container_formats[0], *self.container_formats)
@@ -372,7 +373,12 @@ class App(tk.Tk):
         # Video Codec
         self.re_video_codec_label = ttk.Label(self.tab2, text="Video Codec:")
         self.re_video_codec_label.grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        self.video_codecs = ["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "libx264", "vp9", "mpeg4"]
+        # Filter out 'copy' for re-encoder if desired, or keep it. Original list had fewer items for re-encoder.
+        # Original re-encoder list: ["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "libx264", "vp9", "mpeg4"]
+        # Constant list: ["hevc_nvenc", "hevc_amf", "hevc_qsv", "libx265", "libx264", "vp9", "mpeg4", "copy"]
+        # Using constant list but excluding 'copy' to match original behavior if necessary, or just using full list.
+        # The user's prompt implies unified lists, so I will use the constant list.
+        self.video_codecs = [c for c in VIDEO_CODECS if c != 'copy'] 
         self.re_video_codec_var = tk.StringVar(self.tab2)
         self.re_video_codec_var.set(self.video_codecs[0]) # Default to hevc_nvenc
         self.re_video_codec_option = ttk.OptionMenu(self.tab2, self.re_video_codec_var, self.video_codecs[0], *self.video_codecs)
@@ -381,7 +387,7 @@ class App(tk.Tk):
         # Audio Codec
         self.re_audio_codec_label = ttk.Label(self.tab2, text="Audio Codec:")
         self.re_audio_codec_label.grid(row=6, column=0, padx=5, pady=5, sticky=tk.W)
-        self.audio_codecs = ["aac", "opus", "libmp3lame"]
+        self.audio_codecs = [c for c in AUDIO_CODECS if c != 'copy']
         self.re_audio_codec_var = tk.StringVar(self.tab2)
         self.re_audio_codec_var.set(self.audio_codecs[0]) # Default to aac
         self.re_audio_codec_option = ttk.OptionMenu(self.tab2, self.re_audio_codec_var, self.audio_codecs[0], *self.audio_codecs)
@@ -390,7 +396,7 @@ class App(tk.Tk):
         # Container Format
         self.re_container_format_label = ttk.Label(self.tab2, text="Container Format:")
         self.re_container_format_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
-        self.container_formats = ["mp4", "mkv", "mov", "avi"]
+        self.container_formats = CONTAINER_FORMATS
         self.re_container_format_var = tk.StringVar(self.tab2)
         self.re_container_format_var.set(self.container_formats[0]) # Default to mp4
         self.re_container_format_option = ttk.OptionMenu(self.tab2, self.re_container_format_var, self.container_formats[0], *self.container_formats)

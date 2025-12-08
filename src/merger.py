@@ -3,18 +3,7 @@ import os
 import re
 import tempfile
 from send2trash import send2trash
-
-def _parse_time_str(time_str):
-    """Parses HH:MM:SS.ms string to seconds."""
-    if not time_str:
-        return 0.0
-    try:
-        parts = time_str.split(':')
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    except ValueError:
-        pass
-    return 0.0
+from utils import parse_time_str, recycle_file
 
 def _get_video_duration(file_path):
     """Gets the duration of a single video file using ffprobe."""
@@ -109,11 +98,11 @@ def merge_videos(
             if total_duration == 0.0:
                  match = duration_pattern.search(line)
                  if match:
-                     total_duration = _parse_time_str(match.group(1))
+                     total_duration = parse_time_str(match.group(1))
 
             if line.startswith("out_time="):
                 time_str = line.split("=")[1]
-                current_time = _parse_time_str(time_str)
+                current_time = parse_time_str(time_str)
                 
                 if total_duration > 0:
                     percentage = min(100.0, (current_time / total_duration) * 100)
@@ -148,11 +137,8 @@ def merge_videos(
         if recycle_original:
             recycled_count = 0
             for f in input_files:
-                try:
-                    send2trash(f)
+                if recycle_file(f):
                     recycled_count += 1
-                except Exception:
-                    pass
             msg += f" {recycled_count} original files moved to Recycle Bin."
         return True, msg
     else:

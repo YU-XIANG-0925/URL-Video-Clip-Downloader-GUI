@@ -9,6 +9,7 @@ import time
 # Import TaskController from task_utils but handle circular import if necessary or use typing only
 # Since task_utils is separate, it should be fine.
 from task_utils import TaskController
+from utils import get_low_vram_args
 
 def log_error(error_message: str):
     """Appends a timestamped error message to the .error_log/errors.log file."""
@@ -91,23 +92,6 @@ def _run_stoppable_ffmpeg(command, task_controller: TaskController, progress_hoo
         return True, "Success"
     else:
         return False, f"Process failed with code {process.returncode}"
-
-def _get_low_vram_args(codec: str):
-    """Returns ffmpeg arguments to minimize VRAM usage for hardware encoders."""
-    if not codec:
-        return []
-    
-    args = []
-    if codec == 'hevc_nvenc' or codec == 'h264_nvenc':
-        # NVIDIA: P1 (fastest), no lookahead, limit surfaces
-        args.extend(['-preset', 'p1', '-rc-lookahead', '0', '-surfaces', '0', '-delay', '0'])
-    elif codec == 'hevc_amf' or codec == 'h264_amf':
-        # AMD: Speed preset
-        args.extend(['-quality', 'speed', '-rc', 'cbr'])
-    elif codec == 'hevc_qsv' or codec == 'h264_qsv':
-        # Intel: Veryfast preset
-        args.extend(['-preset', 'veryfast'])
-    return args
 
 def start_download(job: DownloadJob):
     job.status = DownloadStatus.DOWNLOADING
@@ -251,7 +235,7 @@ def start_download(job: DownloadJob):
             if job.video_codec and job.video_codec != 'copy':
                 postprocessor_args.extend(['-c:v', job.video_codec])
                 if job.low_vram:
-                    postprocessor_args.extend(_get_low_vram_args(job.video_codec))
+                    postprocessor_args.extend(get_low_vram_args(job.video_codec))
 
             elif job.video_codec == 'copy':
                 postprocessor_args.extend(['-c:v', 'copy'])

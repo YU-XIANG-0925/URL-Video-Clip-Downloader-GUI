@@ -5,35 +5,7 @@ import re
 from send2trash import send2trash
 
 from task_utils import TaskController
-
-def _parse_time_str(time_str):
-    """Parses HH:MM:SS.ms string to seconds."""
-    if not time_str:
-        return 0.0
-    try:
-        parts = time_str.split(':')
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + float(parts[2])
-    except ValueError:
-        pass
-    return 0.0
-
-def _get_low_vram_args(codec: str):
-    """Returns ffmpeg arguments to minimize VRAM usage for hardware encoders."""
-    if not codec:
-        return []
-    
-    args = []
-    if codec == 'hevc_nvenc' or codec == 'h264_nvenc':
-        # NVIDIA: P1 (fastest), no lookahead, limit surfaces
-        args.extend(['-preset', 'p1', '-rc-lookahead', '0', '-surfaces', '0', '-delay', '0'])
-    elif codec == 'hevc_amf' or codec == 'h264_amf':
-        # AMD: Speed preset
-        args.extend(['-quality', 'speed', '-rc', 'cbr'])
-    elif codec == 'hevc_qsv' or codec == 'h264_qsv':
-        # Intel: Veryfast preset
-        args.extend(['-preset', 'veryfast'])
-    return args
+from utils import get_low_vram_args, parse_time_str, recycle_file
 
 def _run_ffmpeg_command(
     input_file: str,
@@ -55,7 +27,7 @@ def _run_ffmpeg_command(
     ]
     
     if low_vram:
-        command.extend(_get_low_vram_args(video_codec))
+        command.extend(get_low_vram_args(video_codec))
         
     command.append(output_file)
 
@@ -80,12 +52,12 @@ def _run_ffmpeg_command(
             if total_duration == 0.0:
                 match = duration_pattern.search(line)
                 if match:
-                    total_duration = _parse_time_str(match.group(1))
+                    total_duration = parse_time_str(match.group(1))
 
             # Extract current time from -progress output
             if line.startswith("out_time="):
                 time_str = line.split("=")[1]
-                current_time = _parse_time_str(time_str)
+                current_time = parse_time_str(time_str)
                 
                 if total_duration > 0:
                     percentage = min(100.0, (current_time / total_duration) * 100)
@@ -144,11 +116,10 @@ def reencode_video(
         )
         if success:
             if recycle_original:
-                try:
-                    send2trash(input_path)
+                if recycle_file(input_path):
                     return True, "Re-encoding completed successfully. Original file moved to Recycle Bin."
-                except Exception as e:
-                    return True, f"Re-encoding successful, but failed to recycle original: {e}"
+                else:
+                    return True, "Re-encoding successful, but failed to recycle original."
             return True, "Re-encoding completed successfully."
         else:
             return False, f"Single file re-encoding failed: {error_msg}"
@@ -195,11 +166,8 @@ def reencode_video(
                     if success:
                         reencoded_count += 1
                         if recycle_original:
-                            try:
-                                send2trash(input_file)
+                            if recycle_file(input_file):
                                 recycled_count += 1
-                            except Exception:
-                                pass # Suppress individual recycle errors in batch to avoid spam
                     else:
                         failed_files.append(f"{relative_path} ({error_msg})")
         
