@@ -2,6 +2,9 @@ import subprocess
 import os
 import threading
 import re
+from send2trash import send2trash
+
+from task_utils import TaskController
 
 def _parse_time_str(time_str):
     """Parses HH:MM:SS.ms string to seconds."""
@@ -15,12 +18,31 @@ def _parse_time_str(time_str):
         pass
     return 0.0
 
+def _get_low_vram_args(codec: str):
+    """Returns ffmpeg arguments to minimize VRAM usage for hardware encoders."""
+    if not codec:
+        return []
+    
+    args = []
+    if codec == 'hevc_nvenc' or codec == 'h264_nvenc':
+        # NVIDIA: P1 (fastest), no lookahead, limit surfaces
+        args.extend(['-preset', 'p1', '-rc-lookahead', '0', '-surfaces', '0', '-delay', '0'])
+    elif codec == 'hevc_amf' or codec == 'h264_amf':
+        # AMD: Speed preset
+        args.extend(['-quality', 'speed', '-rc', 'cbr'])
+    elif codec == 'hevc_qsv' or codec == 'h264_qsv':
+        # Intel: Veryfast preset
+        args.extend(['-preset', 'veryfast'])
+    return args
+
 def _run_ffmpeg_command(
     input_file: str,
     output_file: str,
     video_codec: str,
     audio_codec: str,
-    progress_callback=None
+    progress_callback=None,
+    task_controller: TaskController = None,
+    low_vram: bool = False
 ):
     command = [
         "ffmpeg",
@@ -29,45 +51,67 @@ def _run_ffmpeg_command(
         "-c:a", audio_codec,
         "-y", # Overwrite output files without asking
         "-progress", "pipe:1", # Output progress information to stdout
-        "-nostats", # Suppress standard progress bar to avoid parsing issues
-        output_file
+        "-nostats" # Suppress standard progress bar to avoid parsing issues
     ]
+    
+    if low_vram:
+        command.extend(_get_low_vram_args(video_codec))
+        
+    command.append(output_file)
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore')
+
+    if task_controller:
+        task_controller.set_process(process)
 
     total_duration = 0.0
     duration_pattern = re.compile(r"Duration:\s(\d{2}:\d{2}:\d{2}\.\d{2})")
     
-    for line in process.stdout:
-        line = line.strip()
-        if not line:
-            continue
+    try:
+        for line in process.stdout:
+            if task_controller and task_controller.is_stopped():
+                break
 
-        # Try to extract duration from stderr (which is merged into stdout)
-        if total_duration == 0.0:
-            match = duration_pattern.search(line)
-            if match:
-                total_duration = _parse_time_str(match.group(1))
+            line = line.strip()
+            if not line:
+                continue
 
-        # Extract current time from -progress output
-        if line.startswith("out_time="):
-            time_str = line.split("=")[1]
-            current_time = _parse_time_str(time_str)
-            
-            if total_duration > 0:
-                percentage = min(100.0, (current_time / total_duration) * 100)
-                if progress_callback:
-                    progress_callback(percentage, f"Re-encoding... {percentage:.1f}%")
-            else:
-                # If duration couldn't be parsed, just show the raw time
-                if progress_callback:
-                    progress_callback(None, f"Re-encoding... {time_str}")
-        elif progress_callback and not line.startswith(("frame=", "fps=", "stream_", "bitrate=", "total_size=", "out_time_us=", "out_time_ms=", "dup_frames=", "drop_frames=", "speed=", "progress=")):
-             # Forward other interesting lines (errors, metadata info) but filter out raw progress keys to reduce noise if needed
-             # For now, we'll be selective to avoid flooding the GUI status
-             pass
+            # Try to extract duration from stderr (which is merged into stdout)
+            if total_duration == 0.0:
+                match = duration_pattern.search(line)
+                if match:
+                    total_duration = _parse_time_str(match.group(1))
+
+            # Extract current time from -progress output
+            if line.startswith("out_time="):
+                time_str = line.split("=")[1]
+                current_time = _parse_time_str(time_str)
+                
+                if total_duration > 0:
+                    percentage = min(100.0, (current_time / total_duration) * 100)
+                    if progress_callback:
+                        progress_callback(percentage, f"Re-encoding... {percentage:.1f}%")
+                else:
+                    # If duration couldn't be parsed, just show the raw time
+                    if progress_callback:
+                        progress_callback(None, f"Re-encoding... {time_str}")
+            elif progress_callback and not line.startswith(("frame=", "fps=", "stream_", "bitrate=", "total_size=", "out_time_us=", "out_time_ms=", "dup_frames=", "drop_frames=", "speed=", "progress=")):
+                 # Forward other interesting lines (errors, metadata info) but filter out raw progress keys to reduce noise if needed
+                 # For now, we'll be selective to avoid flooding the GUI status
+                 pass
+    except Exception:
+        pass
 
     process.wait()
+
+    if task_controller and task_controller.is_stopped():
+         # Cleanup partial output file if stopped
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except:
+                pass
+        return False, "Re-encoding stopped by user."
 
     if process.returncode == 0:
         return True, ""
@@ -85,7 +129,10 @@ def reencode_video(
     container_format: str,
     mode: str,
     file_types: str,
-    progress_callback=None
+    progress_callback=None,
+    task_controller: TaskController = None,
+    low_vram: bool = False,
+    recycle_original: bool = False
 ):
     if mode == "single":
         if not output_filename:
@@ -93,9 +140,15 @@ def reencode_video(
         
         full_output_file = os.path.join(output_path, f"{output_filename}.{container_format}")
         success, error_msg = _run_ffmpeg_command(
-            input_path, full_output_file, video_codec, audio_codec, progress_callback
+            input_path, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram
         )
         if success:
+            if recycle_original:
+                try:
+                    send2trash(input_path)
+                    return True, "Re-encoding completed successfully. Original file moved to Recycle Bin."
+                except Exception as e:
+                    return True, f"Re-encoding successful, but failed to recycle original: {e}"
             return True, "Re-encoding completed successfully."
         else:
             return False, f"Single file re-encoding failed: {error_msg}"
@@ -111,9 +164,16 @@ def reencode_video(
 
         reencoded_count = 0
         failed_files = []
+        recycled_count = 0
 
         for root, _, files in os.walk(input_path):
+            if task_controller and task_controller.is_stopped():
+                break
+
             for file in files:
+                if task_controller and task_controller.is_stopped():
+                    break
+                
                 file_extension = os.path.splitext(file)[1].lower()
                 if file_extension in allowed_extensions:
                     input_file = os.path.join(root, file)
@@ -130,16 +190,29 @@ def reencode_video(
                         progress_callback(0, f"Processing file: {relative_path}")
 
                     success, error_msg = _run_ffmpeg_command(
-                        input_file, full_output_file, video_codec, audio_codec, progress_callback
+                        input_file, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram
                     )
                     if success:
                         reencoded_count += 1
+                        if recycle_original:
+                            try:
+                                send2trash(input_file)
+                                recycled_count += 1
+                            except Exception:
+                                pass # Suppress individual recycle errors in batch to avoid spam
                     else:
                         failed_files.append(f"{relative_path} ({error_msg})")
         
+        if task_controller and task_controller.is_stopped():
+             return False, "Batch re-encoding stopped by user."
+
+        result_msg = f"Batch re-encoding completed. {reencoded_count} files re-encoded successfully."
+        if recycle_original:
+            result_msg += f" {recycled_count} original files moved to Recycle Bin."
+            
         if not failed_files:
-            return True, f"Batch re-encoding completed. {reencoded_count} files re-encoded successfully."
+            return True, result_msg
         else:
-            return False, f"Batch re-encoding finished with {reencoded_count} successes and {len(failed_files)} failures: {'; '.join(failed_files)}"
+            return False, f"{result_msg} {len(failed_files)} failures: {'; '.join(failed_files)}"
 
     return False, "Invalid re-encoding mode specified."

@@ -6,12 +6,19 @@ import os
 from downloader import DownloadJob, start_download
 from reencoder import reencode_video
 from merger import merge_videos
+from task_utils import TaskController
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("URL Video Clip Downloader")
-        self.geometry("600x400") # Adjusted size for new tab
+        self.geometry("600x450") # Increased height for new buttons
+
+        # Task Controllers
+        self.dl_controller = None
+        self.re_controller = None
+        self.me_controller = None
+        self.current_dl_job = None
 
         # Create Tab Control
         self.tabControl = ttk.Notebook(self)
@@ -87,15 +94,29 @@ class App(tk.Tk):
         self.merge_container_option = ttk.OptionMenu(self.tab3, self.merge_container_var, self.merge_containers[0], *self.merge_containers)
         self.merge_container_option.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Recycle Original Checkbox
+        self.merge_recycle_var = tk.BooleanVar(value=False)
+        self.merge_recycle_check = ttk.Checkbutton(self.tab3, text="Delete original after success (Recycle Bin)", variable=self.merge_recycle_var)
+        self.merge_recycle_check.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
         # Merge Button
-        self.merge_button = ttk.Button(self.tab3, text="Start Merge", command=self.start_merge)
-        self.merge_button.grid(row=5, column=1, pady=10)
+        self.merge_btn_frame = ttk.Frame(self.tab3)
+        self.merge_btn_frame.grid(row=6, column=1, pady=10)
+
+        self.merge_button = ttk.Button(self.merge_btn_frame, text="Start Merge", command=self.start_merge)
+        self.merge_button.pack(side=tk.LEFT, padx=5)
+
+        self.merge_pause_button = ttk.Button(self.merge_btn_frame, text="Pause", command=self.toggle_merge_pause, state=tk.DISABLED)
+        self.merge_pause_button.pack(side=tk.LEFT, padx=5)
+
+        self.merge_stop_button = ttk.Button(self.merge_btn_frame, text="Stop", command=self.stop_merge, state=tk.DISABLED)
+        self.merge_stop_button.pack(side=tk.LEFT, padx=5)
 
         # Progress
         self.merge_progress_bar = ttk.Progressbar(self.tab3, orient="horizontal", length=300, mode="determinate")
-        self.merge_progress_bar.grid(row=6, column=0, columnspan=3, padx=5, pady=5)
+        self.merge_progress_bar.grid(row=7, column=0, columnspan=3, padx=5, pady=5)
         self.merge_status_label = ttk.Label(self.tab3, text="Status: Idle")
-        self.merge_status_label.grid(row=7, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.merge_status_label.grid(row=8, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.tab3.columnconfigure(1, weight=1)
 
@@ -139,6 +160,21 @@ class App(tk.Tk):
         self.merge_status_label.config(text=f"Status: {message}")
         self.update_idletasks()
 
+    def toggle_merge_pause(self):
+        if self.me_controller:
+            if self.me_controller.pause_event.is_set():
+                self.me_controller.resume()
+                self.merge_pause_button.config(text="Pause")
+            else:
+                self.me_controller.pause()
+                self.merge_pause_button.config(text="Resume")
+
+    def stop_merge(self):
+        if self.me_controller:
+            self.me_controller.stop()
+            self.merge_stop_button.config(state=tk.DISABLED)
+            self.merge_status_label.config(text="Status: Stopping...")
+
     def start_merge(self):
         mode = self.merge_mode_var.get()
         output_dir = self.merge_output_dir_entry.get()
@@ -179,23 +215,35 @@ class App(tk.Tk):
         self.merge_status_label.config(text="Status: Starting merge...")
         self.merge_progress_bar['value'] = 0
         self.merge_button.config(state=tk.DISABLED)
+        self.merge_pause_button.config(state=tk.NORMAL, text="Pause")
+        self.merge_stop_button.config(state=tk.NORMAL)
 
-        threading.Thread(target=self._run_merge_task, args=(input_files, output_path)).start()
+        self.me_controller = TaskController()
 
-    def _run_merge_task(self, input_files, output_path):
-        success, message = merge_videos(input_files, output_path, self.merge_progress_callback)
+        threading.Thread(target=self._run_merge_task, args=(input_files, output_path, self.merge_recycle_var.get())).start()
+
+    def _run_merge_task(self, input_files, output_path, recycle_original):
+        success, message = merge_videos(input_files, output_path, self.merge_progress_callback, self.me_controller, recycle_original)
         self.after(0, self._complete_merge_task, success, message)
 
     def _complete_merge_task(self, success, message):
         self.merge_button.config(state=tk.NORMAL)
+        self.merge_pause_button.config(state=tk.DISABLED, text="Pause")
+        self.merge_stop_button.config(state=tk.DISABLED)
+        self.me_controller = None
+
         if success:
             self.merge_progress_bar['value'] = 100
             self.merge_status_label.config(text="Status: Merge finished.")
             messagebox.showinfo("Success", message)
         else:
-            self.merge_progress_bar['value'] = 0
-            self.merge_status_label.config(text="Status: Merge failed.")
-            messagebox.showerror("Error", message)
+            if "stopped by user" in message.lower():
+                self.merge_progress_bar['value'] = 0
+                self.merge_status_label.config(text="Status: Merge stopped.")
+            else:
+                self.merge_progress_bar['value'] = 0
+                self.merge_status_label.config(text="Status: Merge failed.")
+                messagebox.showerror("Error", message)
 
     def create_downloader_tab(self):
         # URL
@@ -257,9 +305,23 @@ class App(tk.Tk):
         self.container_format_option = ttk.OptionMenu(self.tab1, self.container_format_var, self.container_formats[0], *self.container_formats)
         self.container_format_option.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Low VRAM Mode Checkbox
+        self.dl_low_vram_var = tk.BooleanVar(value=False)
+        self.dl_low_vram_check = ttk.Checkbutton(self.tab1, text="Low VRAM Mode (Prevent Lag)", variable=self.dl_low_vram_var)
+        self.dl_low_vram_check.grid(row=7, column=2, padx=5, pady=5, sticky=tk.W)
+
         # Download Button
-        self.download_button = ttk.Button(self.tab1, text="Start Download", command=self.start_download)
-        self.download_button.grid(row=8, column=1, pady=10)
+        self.download_btn_frame = ttk.Frame(self.tab1)
+        self.download_btn_frame.grid(row=8, column=1, pady=10)
+        
+        self.download_button = ttk.Button(self.download_btn_frame, text="Start Download", command=self.start_download)
+        self.download_button.pack(side=tk.LEFT, padx=5)
+
+        self.dl_pause_button = ttk.Button(self.download_btn_frame, text="Pause", command=self.toggle_dl_pause, state=tk.DISABLED)
+        self.dl_pause_button.pack(side=tk.LEFT, padx=5)
+
+        self.dl_stop_button = ttk.Button(self.download_btn_frame, text="Stop", command=self.stop_dl, state=tk.DISABLED)
+        self.dl_stop_button.pack(side=tk.LEFT, padx=5)
 
         # Progress
         self.progress_bar = ttk.Progressbar(self.tab1, orient="horizontal", length=300, mode="determinate")
@@ -334,23 +396,77 @@ class App(tk.Tk):
         self.re_container_format_option = ttk.OptionMenu(self.tab2, self.re_container_format_var, self.container_formats[0], *self.container_formats)
         self.re_container_format_option.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Low VRAM Mode Checkbox
+        self.re_low_vram_var = tk.BooleanVar(value=False)
+        self.re_low_vram_check = ttk.Checkbutton(self.tab2, text="Low VRAM Mode (Prevent Lag)", variable=self.re_low_vram_var)
+        self.re_low_vram_check.grid(row=7, column=2, padx=5, pady=5, sticky=tk.W)
+
+        # Recycle Original Checkbox
+        self.re_recycle_var = tk.BooleanVar(value=False)
+        self.re_recycle_check = ttk.Checkbutton(self.tab2, text="Delete original after success (Recycle Bin)", variable=self.re_recycle_var)
+        self.re_recycle_check.grid(row=8, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+
         # Re-encode Button
-        self.re_encode_button = ttk.Button(self.tab2, text="Start Re-encode", command=self.start_reencode)
-        self.re_encode_button.grid(row=8, column=1, pady=10)
+        self.re_btn_frame = ttk.Frame(self.tab2)
+        self.re_btn_frame.grid(row=9, column=1, pady=10)
+
+        self.re_encode_button = ttk.Button(self.re_btn_frame, text="Start Re-encode", command=self.start_reencode)
+        self.re_encode_button.pack(side=tk.LEFT, padx=5)
+
+        self.re_pause_button = ttk.Button(self.re_btn_frame, text="Pause", command=self.toggle_re_pause, state=tk.DISABLED)
+        self.re_pause_button.pack(side=tk.LEFT, padx=5)
+
+        self.re_stop_button = ttk.Button(self.re_btn_frame, text="Stop", command=self.stop_re, state=tk.DISABLED)
+        self.re_stop_button.pack(side=tk.LEFT, padx=5)
 
         # Progress
         self.re_progress_bar = ttk.Progressbar(self.tab2, orient="horizontal", length=300, mode="determinate")
-        self.re_progress_bar.grid(row=9, column=0, columnspan=3, padx=5, pady=5)
+        self.re_progress_bar.grid(row=10, column=0, columnspan=3, padx=5, pady=5)
         self.re_status_label = ttk.Label(self.tab2, text="Status: Idle")
-        self.re_status_label.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.re_status_label.grid(row=11, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.tab2.columnconfigure(1, weight=1)
 
     def process_download_queue(self):
         while True:
             job = self.download_queue.get()
-            start_download(job)
+            self.after(0, self.on_dl_start, job)
+            # Run the download
+            try:
+                start_download(job)
+            except Exception as e:
+                pass # Error handling is inside start_download usually
+            self.after(0, self.on_dl_finish, job)
             self.download_queue.task_done()
+
+    def on_dl_start(self, job):
+        self.current_dl_job = job
+        self.dl_controller = job.task_controller
+        self.download_button.config(state=tk.DISABLED)
+        self.dl_pause_button.config(state=tk.NORMAL, text="Pause")
+        self.dl_stop_button.config(state=tk.NORMAL)
+
+    def on_dl_finish(self, job):
+        self.download_button.config(state=tk.NORMAL)
+        self.dl_pause_button.config(state=tk.DISABLED, text="Pause")
+        self.dl_stop_button.config(state=tk.DISABLED)
+        self.current_dl_job = None
+        self.dl_controller = None
+
+    def toggle_dl_pause(self):
+        if self.dl_controller:
+            if self.dl_controller.pause_event.is_set():
+                self.dl_controller.resume()
+                self.dl_pause_button.config(text="Pause")
+            else:
+                self.dl_controller.pause()
+                self.dl_pause_button.config(text="Resume")
+
+    def stop_dl(self):
+        if self.dl_controller:
+            self.dl_controller.stop()
+            self.dl_stop_button.config(state=tk.DISABLED)
+            self.status_label.config(text="Status: Stopping...")
 
     def browse_download_output_path(self):
         path = filedialog.askdirectory()
@@ -370,13 +486,18 @@ class App(tk.Tk):
             self.progress_bar['value'] = 100
             self.status_label.config(text="Status: Download finished.")
             self.update_idletasks()
-            messagebox.showinfo("Success", "Download completed successfully.")
+            # Don't show messagebox here, maybe confusing if queued. 
+            # Or show it only if queue is empty? 
+            # Original code showed it. Let's keep it but maybe make it less blocking?
+            # messagebox.showinfo("Success", "Download completed successfully.") 
+            # Better to show in status label for queued items.
         elif d['status'] == 'error':
             self.status_label.config(text=f"Status: Error")
             self.update_idletasks()
             messagebox.showerror("Error", d['info'])
 
     def start_download(self):
+        controller = TaskController()
         job = DownloadJob(
             url=self.url_entry.get(),
             start_time=self.start_time_entry.get(),
@@ -386,7 +507,9 @@ class App(tk.Tk):
             video_codec=self.video_codec_var.get(),
             audio_codec=self.audio_codec_var.get(),
             container_format=self.container_format_var.get(),
-            progress_hook=self.progress_hook
+            progress_hook=self.progress_hook,
+            task_controller=controller,
+            low_vram=self.dl_low_vram_var.get()
         )
         self.download_queue.put(job)
         self.status_label.config(text=f"Status: Queued {job.url}")
@@ -435,6 +558,21 @@ class App(tk.Tk):
         self.re_status_label.config(text=f"Status: {message}")
         self.update_idletasks()
 
+    def toggle_re_pause(self):
+        if self.re_controller:
+            if self.re_controller.pause_event.is_set():
+                self.re_controller.resume()
+                self.re_pause_button.config(text="Pause")
+            else:
+                self.re_controller.pause()
+                self.re_pause_button.config(text="Resume")
+
+    def stop_re(self):
+        if self.re_controller:
+            self.re_controller.stop()
+            self.re_stop_button.config(state=tk.DISABLED)
+            self.re_status_label.config(text="Status: Stopping...")
+
     def start_reencode(self):
         input_path = self.re_input_path_entry.get()
         output_dir = self.re_output_dir_entry.get()
@@ -456,12 +594,16 @@ class App(tk.Tk):
         self.re_status_label.config(text="Status: Starting re-encoding...")
         self.re_progress_bar['value'] = 0
         self.re_encode_button.config(state=tk.DISABLED)
+        self.re_pause_button.config(state=tk.NORMAL, text="Pause")
+        self.re_stop_button.config(state=tk.NORMAL)
+
+        self.re_controller = TaskController()
 
         # Run re-encoding in a separate thread to keep GUI responsive
         threading.Thread(target=self._run_reencode_task,
-                         args=(input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types)).start()
+                         args=(input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, self.re_low_vram_var.get(), self.re_recycle_var.get())).start()
 
-    def _run_reencode_task(self, input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types):
+    def _run_reencode_task(self, input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, low_vram, recycle_original):
         success, message = reencode_video(
             input_path,
             output_dir,
@@ -471,20 +613,31 @@ class App(tk.Tk):
             container_format,
             re_mode,
             file_types,
-            self.reencode_progress_callback
+            self.reencode_progress_callback,
+            self.re_controller,
+            low_vram,
+            recycle_original
         )
         self.after(0, self._complete_reencode_task, success, message)
 
     def _complete_reencode_task(self, success, message):
         self.re_encode_button.config(state=tk.NORMAL)
+        self.re_pause_button.config(state=tk.DISABLED, text="Pause")
+        self.re_stop_button.config(state=tk.DISABLED)
+        self.re_controller = None
+
         if success:
             self.re_progress_bar['value'] = 100
             self.re_status_label.config(text="Status: Re-encoding finished.")
             messagebox.showinfo("Success", message)
         else:
-            self.re_progress_bar['value'] = 0
-            self.re_status_label.config(text="Status: Re-encoding failed.")
-            messagebox.showerror("Error", message)
+            if "stopped by user" in message.lower():
+                 self.re_progress_bar['value'] = 0
+                 self.re_status_label.config(text="Status: Re-encoding stopped.")
+            else:
+                self.re_progress_bar['value'] = 0
+                self.re_status_label.config(text="Status: Re-encoding failed.")
+                messagebox.showerror("Error", message)
 
 if __name__ == "__main__":
     app = App()

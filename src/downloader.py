@@ -5,6 +5,10 @@ import yt_dlp
 import os
 from typing import Callable
 import datetime
+import time
+# Import TaskController from task_utils but handle circular import if necessary or use typing only
+# Since task_utils is separate, it should be fine.
+from task_utils import TaskController
 
 def log_error(error_message: str):
     """Appends a timestamped error message to the .error_log/errors.log file."""
@@ -26,6 +30,7 @@ class DownloadStatus(Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    STOPPED = "stopped"
 
 @dataclass
 class DownloadJob:
@@ -40,6 +45,69 @@ class DownloadJob:
     status: DownloadStatus = DownloadStatus.QUEUED
     progress: int = 0
     progress_hook: Callable = None
+    task_controller: TaskController = None
+    low_vram: bool = False
+
+def _run_stoppable_ffmpeg(command, task_controller: TaskController, progress_hook=None, info_prefix="Processing"):
+    """Helper to run ffmpeg with stop/pause support via TaskController."""
+    process = subprocess.Popen(
+        command, 
+        stdout=subprocess.PIPE, 
+        stderr=subprocess.STDOUT, 
+        universal_newlines=True, 
+        encoding='utf-8', 
+        errors='ignore'
+    )
+    
+    if task_controller:
+        task_controller.set_process(process)
+    
+    # We can parse output to check for errors, but for 'copy' operations progress info is limited.
+    # Still, we need to loop to allow checking for stop/pause events.
+    for line in process.stdout:
+        if task_controller:
+            # Check Stop
+            if task_controller.is_stopped():
+                process.terminate()
+                return False, "Stopped by user"
+            
+            # Check Pause (Wait loop)
+            while task_controller.pause_event.is_set():
+                if task_controller.is_stopped():
+                    process.terminate()
+                    return False, "Stopped by user"
+                time.sleep(0.1)
+                
+        # Optional: Parse progress if needed, but for simple clipping usually unnecessary
+        # to show percentage unless we calculate duration.
+        pass
+        
+    process.wait()
+    
+    if task_controller and task_controller.is_stopped():
+        return False, "Stopped by user"
+        
+    if process.returncode == 0:
+        return True, "Success"
+    else:
+        return False, f"Process failed with code {process.returncode}"
+
+def _get_low_vram_args(codec: str):
+    """Returns ffmpeg arguments to minimize VRAM usage for hardware encoders."""
+    if not codec:
+        return []
+    
+    args = []
+    if codec == 'hevc_nvenc' or codec == 'h264_nvenc':
+        # NVIDIA: P1 (fastest), no lookahead, limit surfaces
+        args.extend(['-preset', 'p1', '-rc-lookahead', '0', '-surfaces', '0', '-delay', '0'])
+    elif codec == 'hevc_amf' or codec == 'h264_amf':
+        # AMD: Speed preset
+        args.extend(['-quality', 'speed', '-rc', 'cbr'])
+    elif codec == 'hevc_qsv' or codec == 'h264_qsv':
+        # Intel: Veryfast preset
+        args.extend(['-preset', 'veryfast'])
+    return args
 
 def start_download(job: DownloadJob):
     job.status = DownloadStatus.DOWNLOADING
@@ -86,46 +154,91 @@ def start_download(job: DownloadJob):
                     '-ss', job.start_time,
                     '-to', job.end_time,
                     '-c', 'copy',
+                    '-y',
                     output_full_path
                 ]
-                # Use text=True for better error messages
-                result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+                
+                success, msg = _run_stoppable_ffmpeg(command, job.task_controller)
+                
+                if not success:
+                    if "Stopped" in msg:
+                         job.status = DownloadStatus.STOPPED
+                         if job.progress_hook: job.progress_hook({'status': 'error', 'info': 'Stopped by user'})
+                         # Cleanup
+                         if os.path.exists(output_full_path):
+                             try: os.remove(output_full_path)
+                             except: pass
+                         return
+                    else:
+                        raise Exception(f"ffmpeg error: {msg}")
+
                 job.status = DownloadStatus.COMPLETED
                 if job.progress_hook:
                     job.progress_hook({'status': 'finished', 'info': 'Clipping finished.'}) 
                 return
+
             except FileNotFoundError:
                 raise Exception("ffmpeg not found. Please install ffmpeg and add it to your PATH.")
-            except subprocess.CalledProcessError as e:
-                # Provide more detailed error from ffmpeg
-                raise Exception(f"ffmpeg error during clipping: {e.stderr}")
+            except Exception as e:
+                raise Exception(f"ffmpeg error during clipping: {e}")
 
         else:
             # --- LOGIC FOR URLS (Original Logic) ---
             if job.start_time and job.end_time:
                 try:
                     # Try with ffmpeg first for direct stream clipping
+                    # Note: We can't easily check for FileNotFoundError with Popen if we wrap it,
+                    # but _run_stoppable_ffmpeg handles general failures.
                     command = [
                         'ffmpeg',
                         '-i', job.url,
                         '-ss', job.start_time,
                         '-to', job.end_time,
                         '-c', 'copy',
+                        '-y',
                         output_full_path
                     ]
-                    subprocess.run(command, check=True, capture_output=True)
-                    if job.progress_hook:
-                        job.progress_hook({'status': 'finished', 'info': 'Download finished.'}) 
-                    job.status = DownloadStatus.COMPLETED
-                    return
-                except (FileNotFoundError, subprocess.CalledProcessError):
-                    # If ffmpeg fails (not found or error on stream), fall back to yt-dlp
+                    
+                    success, msg = _run_stoppable_ffmpeg(command, job.task_controller)
+                    
+                    if success:
+                        if job.progress_hook:
+                            job.progress_hook({'status': 'finished', 'info': 'Download finished.'}) 
+                        job.status = DownloadStatus.COMPLETED
+                        return
+                    elif "Stopped" in msg:
+                         job.status = DownloadStatus.STOPPED
+                         if job.progress_hook: job.progress_hook({'status': 'error', 'info': 'Stopped by user'})
+                         if os.path.exists(output_full_path):
+                             try: os.remove(output_full_path)
+                             except: pass
+                         return
+                    else:
+                        # Fallback to yt-dlp if ffmpeg failed (likely due to URL type)
+                        pass
+                except Exception:
                     pass
 
             # Use yt-dlp for downloading and/or clipping
+            
+            # Hook wrapper to inject stop/pause logic into yt-dlp
+            def wrapped_hook(d):
+                if job.task_controller:
+                    if job.task_controller.is_stopped():
+                        raise Exception("Stopped by user")
+                    
+                    # Pause logic: loop sleep
+                    while job.task_controller.pause_event.is_set():
+                        if job.task_controller.is_stopped():
+                            raise Exception("Stopped by user")
+                        time.sleep(0.5)
+                
+                if job.progress_hook:
+                    job.progress_hook(d)
+
             ydl_opts = {
                 'outtmpl': output_full_path,
-                'progress_hooks': [job.progress_hook] if job.progress_hook else [],
+                'progress_hooks': [wrapped_hook],
             }
 
             postprocessor_args = []
@@ -137,6 +250,9 @@ def start_download(job: DownloadJob):
             # Add codec options if they are not 'copy'
             if job.video_codec and job.video_codec != 'copy':
                 postprocessor_args.extend(['-c:v', job.video_codec])
+                if job.low_vram:
+                    postprocessor_args.extend(_get_low_vram_args(job.video_codec))
+
             elif job.video_codec == 'copy':
                 postprocessor_args.extend(['-c:v', 'copy'])
 
@@ -145,7 +261,7 @@ def start_download(job: DownloadJob):
             elif job.audio_codec == 'copy':
                 postprocessor_args.extend(['-c:a', 'copy'])
 
-            if postprocessor_args: # If there are any post-processing args, add the convertor
+            if postprocessor_args: 
                 ydl_opts['postprocessors'] = [{
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': job.container_format or 'mp4',
@@ -160,13 +276,21 @@ def start_download(job: DownloadJob):
 
     except yt_dlp.utils.DownloadError as e:
         error_msg = str(e)
-        log_error(error_msg)
-        job.status = DownloadStatus.FAILED
-        if job.progress_hook:
-            job.progress_hook({'status': 'error', 'info': error_msg})
+        if "Stopped by user" in error_msg:
+             job.status = DownloadStatus.STOPPED
+             if job.progress_hook: job.progress_hook({'status': 'error', 'info': 'Stopped by user'})
+        else:
+            log_error(error_msg)
+            job.status = DownloadStatus.FAILED
+            if job.progress_hook:
+                job.progress_hook({'status': 'error', 'info': error_msg})
     except Exception as e:
         error_msg = str(e)
-        log_error(error_msg)
-        job.status = DownloadStatus.FAILED
-        if job.progress_hook:
-            job.progress_hook({'status': 'error', 'info': error_msg})
+        if "Stopped by user" in error_msg:
+             job.status = DownloadStatus.STOPPED
+             if job.progress_hook: job.progress_hook({'status': 'error', 'info': 'Stopped by user'})
+        else:
+            log_error(error_msg)
+            job.status = DownloadStatus.FAILED
+            if job.progress_hook:
+                job.progress_hook({'status': 'error', 'info': error_msg})

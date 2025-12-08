@@ -2,6 +2,7 @@ import subprocess
 import os
 import re
 import tempfile
+from send2trash import send2trash
 
 def _parse_time_str(time_str):
     """Parses HH:MM:SS.ms string to seconds."""
@@ -30,10 +31,14 @@ def _get_video_duration(file_path):
     except (subprocess.CalledProcessError, ValueError):
         return 0.0
 
+from task_utils import TaskController
+
 def merge_videos(
     input_files: list,
     output_file: str,
-    progress_callback=None
+    progress_callback=None,
+    task_controller: TaskController = None,
+    recycle_original: bool = False
 ):
     """
     Merges a list of video files into a single file using ffmpeg concat demuxer.
@@ -45,6 +50,8 @@ def merge_videos(
     # 1. Calculate total duration for progress estimation
     total_duration = 0.0
     for f in input_files:
+        if task_controller and task_controller.is_stopped():
+             return False, "Merge stopped by user."
         total_duration += _get_video_duration(f)
 
     # 2. Create the concat list file
@@ -81,34 +88,43 @@ def merge_videos(
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore')
 
+    if task_controller:
+        task_controller.set_process(process)
+
     duration_pattern = re.compile(r"Duration:\s(\d{2}:\d{2}:\d{2}\.\d{2})")
     
     # If total_duration calc failed (e.g. ffprobe missing), try to get it from the first few lines of ffmpeg output (it might estimate it)
     
     full_log = []
-    for line in process.stdout:
-        line = line.strip()
-        full_log.append(line)
-        if not line:
-            continue
+    try:
+        for line in process.stdout:
+            if task_controller and task_controller.is_stopped():
+                break
 
-        if total_duration == 0.0:
-             match = duration_pattern.search(line)
-             if match:
-                 total_duration = _parse_time_str(match.group(1))
+            line = line.strip()
+            full_log.append(line)
+            if not line:
+                continue
 
-        if line.startswith("out_time="):
-            time_str = line.split("=")[1]
-            current_time = _parse_time_str(time_str)
-            
-            if total_duration > 0:
-                percentage = min(100.0, (current_time / total_duration) * 100)
-                if progress_callback:
-                    progress_callback(percentage, f"Merging... {percentage:.1f}%")
-            else:
-                if progress_callback:
-                    progress_callback(None, f"Merging... {time_str}")
+            if total_duration == 0.0:
+                 match = duration_pattern.search(line)
+                 if match:
+                     total_duration = _parse_time_str(match.group(1))
 
+            if line.startswith("out_time="):
+                time_str = line.split("=")[1]
+                current_time = _parse_time_str(time_str)
+                
+                if total_duration > 0:
+                    percentage = min(100.0, (current_time / total_duration) * 100)
+                    if progress_callback:
+                        progress_callback(percentage, f"Merging... {percentage:.1f}%")
+                else:
+                    if progress_callback:
+                        progress_callback(None, f"Merging... {time_str}")
+    except Exception as e:
+        pass
+    
     process.wait() 
     
     # Clean up temp file
@@ -117,9 +133,28 @@ def merge_videos(
             os.remove(concat_list_path)
         except:
             pass
+    
+    if task_controller and task_controller.is_stopped():
+        # Cleanup partial output file if stopped
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except:
+                pass
+        return False, "Merge stopped by user."
 
     if process.returncode == 0:
-        return True, "Merge completed successfully."
+        msg = "Merge completed successfully."
+        if recycle_original:
+            recycled_count = 0
+            for f in input_files:
+                try:
+                    send2trash(f)
+                    recycled_count += 1
+                except Exception:
+                    pass
+            msg += f" {recycled_count} original files moved to Recycle Bin."
+        return True, msg
     else:
         error_details = "\n".join(full_log[-10:]) # Last 10 lines
         return False, f"Merge failed with error code: {process.returncode}.\nOutput:\n{error_details}"
