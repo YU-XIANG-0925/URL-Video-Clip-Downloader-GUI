@@ -1,15 +1,33 @@
 # URL Video Clip Downloader GUI
 
-A simple GUI application for downloading video clips from various URLs, including YouTube.
+[繁體中文](README_zh-TW.md) | [简体中文](README_zh-CN.md)
+
+A simple GUI application for downloading video clips from various URLs, re-encoding videos, and merging video clips.
 
 ## Features
 
-- Download video clips by providing a URL.
-- Specify start and end times to download only a segment of the video.
-- Choose the output path and filename.
-- A simple queue system to handle multiple downloads.
-- Progress bar and status updates.
-- Error handling for common issues.
+### 📥 Downloader
+- **URL Download**: Download videos from various platforms (via `yt-dlp`).
+- **Video Clipping**: Specify start and end times (HH:MM:SS) to download only a segment.
+- **Local File Clipping**: Supports clipping local video files.
+- **Format Selection**: Choose video codecs (H.264, H.265/HEVC, NVENC, AMF, QSV) and audio codecs.
+- **Low VRAM Mode**: Optimization options for low memory environments.
+
+### 🔄 Re-encoder
+- **Format Conversion**: Convert videos to different codecs or containers (MP4, MKV, AVI, etc.).
+- **Batch Processing**: Support for single file or batch directory processing.
+- **Hardware Acceleration**: Support for NVIDIA (NVENC), AMD (AMF), and Intel (QSV).
+- **Recycle Bin**: Option to move original files to the recycle bin after successful re-encoding.
+
+### 🎞️ Merger
+- **Video Merging**: Losslessly merge multiple video clips into one file.
+- **Input Selection**: Select specific files or an entire directory.
+- **Recycle Bin**: Option to move original files to the recycle bin after successful merge.
+
+### ⚙️ General
+- **Task Control**: **Pause**, **Resume**, and **Stop** tasks.
+- **Queue System**: Handles multiple download tasks.
+- **Progress Tracking**: Real-time progress bar and status updates.
 
 ## Prerequisites
 
@@ -58,13 +76,10 @@ A simple GUI application for downloading video clips from various URLs, includin
     python src/main.py
     ```
 
-2.  **Enter the video URL** in the "URL" field.
-
-3.  **Set the time range** (optional) in HH:MM:SS format.
-
-4.  **Choose the output path and filename**.
-
-5.  **Click "Start Download"**.
+2.  **Select a Tab**:
+    - **Downloader**: Enter URL, set time range/format, and click "Start Download".
+    - **Re-encoder**: Choose input file/folder and output settings, click "Start Re-encode".
+    - **Merger**: Add files, set output filename, and click "Start Merge".
 
 ## Contributing
 
