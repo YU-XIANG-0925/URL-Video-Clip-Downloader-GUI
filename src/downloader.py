@@ -10,6 +10,7 @@ import time
 # Since task_utils is separate, it should be fine.
 from task_utils import TaskController
 from utils import get_low_vram_args
+from constants import BEST_CODEC_LABEL
 
 def log_error(error_message: str):
     """Appends a timestamped error message to the .error_log/errors.log file."""
@@ -136,11 +137,17 @@ def start_download(job: DownloadJob):
                     'ffmpeg',
                     '-i', job.url,
                     '-ss', job.start_time,
-                    '-to', job.end_time,
-                    '-c', 'copy',
-                    '-y',
-                    output_full_path
+                    '-to', job.end_time
                 ]
+
+                if job.video_codec == BEST_CODEC_LABEL:
+                    command.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', '24', '-c:a', 'copy'])
+                    if job.low_vram:
+                         command.extend(get_low_vram_args("hevc_nvenc"))
+                else:
+                    command.extend(['-c', 'copy']) # Default to copy for local clips as per original logic if not "Best"
+
+                command.extend(['-y', output_full_path])
                 
                 success, msg = _run_stoppable_ffmpeg(command, job.task_controller)
                 
@@ -232,7 +239,11 @@ def start_download(job: DownloadJob):
                 postprocessor_args.extend(['-to', job.end_time])
             
             # Add codec options if they are not 'copy'
-            if job.video_codec and job.video_codec != 'copy':
+            if job.video_codec == BEST_CODEC_LABEL:
+                 postprocessor_args.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', '24', '-c:a', 'copy'])
+                 if job.low_vram:
+                    postprocessor_args.extend(get_low_vram_args("hevc_nvenc"))
+            elif job.video_codec and job.video_codec != 'copy':
                 postprocessor_args.extend(['-c:v', job.video_codec])
                 if job.low_vram:
                     postprocessor_args.extend(get_low_vram_args(job.video_codec))
@@ -240,10 +251,11 @@ def start_download(job: DownloadJob):
             elif job.video_codec == 'copy':
                 postprocessor_args.extend(['-c:v', 'copy'])
 
-            if job.audio_codec and job.audio_codec != 'copy':
-                postprocessor_args.extend(['-c:a', job.audio_codec])
-            elif job.audio_codec == 'copy':
-                postprocessor_args.extend(['-c:a', 'copy'])
+            if job.video_codec != BEST_CODEC_LABEL: # Only handle audio separately if not using "Best" preset which enforces audio copy
+                if job.audio_codec and job.audio_codec != 'copy':
+                    postprocessor_args.extend(['-c:a', job.audio_codec])
+                elif job.audio_codec == 'copy':
+                    postprocessor_args.extend(['-c:a', 'copy'])
 
             if postprocessor_args: 
                 ydl_opts['postprocessors'] = [{

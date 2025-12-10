@@ -1,2 +1,10 @@
 .gemini
 .specify
+__pycache__/
+*.pyc
+*.swp
+.error_log/
+.venv/
+.pytest_cache/
+*.log
+

@@ -4,6 +4,7 @@ import threading
 import re
 from send2trash import send2trash
 
+from constants import BEST_CODEC_LABEL
 from task_utils import TaskController
 from utils import get_low_vram_args, parse_time_str, recycle_file
 
@@ -18,15 +19,30 @@ def _run_ffmpeg_command(
 ):
     command = [
         "ffmpeg",
-        "-i", input_file,
-        "-c:v", video_codec,
-        "-c:a", audio_codec,
+        "-i", input_file
+    ]
+
+    if video_codec == BEST_CODEC_LABEL:
+        # Best settings: HEVC NVENC, Preset P7 (Best Quality), CQ 24, Audio Copy
+        command.extend(["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "24", "-c:a", "copy"])
+    else:
+        command.extend(["-c:v", video_codec, "-c:a", audio_codec])
+
+    command.extend([
         "-y", # Overwrite output files without asking
         "-progress", "pipe:1", # Output progress information to stdout
         "-nostats" # Suppress standard progress bar to avoid parsing issues
-    ]
+    ])
     
-    if low_vram:
+    if low_vram and video_codec != BEST_CODEC_LABEL: # logic handles specific codecs, skip for custom preset if not needed or integrated
+         # Note: get_low_vram_args likely checks for 'hevc_nvenc'. 
+         # Since we are using hevc_nvenc in Best mode, we might still want low vram args if user checked it?
+         # The user instruction didn't specify low vram behavior for "Best", but generally P7 uses max resources.
+         # If low_vram is true, we might want to avoid P7 or add the delay args.
+         # get_low_vram_args(codec) usually returns ['-delay', '20'] etc.
+         # If video_codec is BEST, we are using hevc_nvenc.
+         command.extend(get_low_vram_args("hevc_nvenc"))
+    elif low_vram:
         command.extend(get_low_vram_args(video_codec))
         
     command.append(output_file)

@@ -7,7 +7,8 @@ from downloader import DownloadJob, start_download
 from reencoder import reencode_video
 from merger import merge_videos
 from task_utils import TaskController
-from constants import VIDEO_CODECS, AUDIO_CODECS, CONTAINER_FORMATS, MERGE_VIDEO_EXTENSIONS, MERGE_CONTAINER_FORMATS
+from constants import VIDEO_CODECS, AUDIO_CODECS, CONTAINER_FORMATS, MERGE_VIDEO_EXTENSIONS, MERGE_CONTAINER_FORMATS, BEST_CODEC_LABEL
+from utils import get_media_info
 
 class App(tk.Tk):
     def __init__(self):
@@ -27,9 +28,11 @@ class App(tk.Tk):
         self.tab1 = ttk.Frame(self.tabControl)
         self.tab2 = ttk.Frame(self.tabControl)
         self.tab3 = ttk.Frame(self.tabControl)
+        self.tab4 = ttk.Frame(self.tabControl)
         self.tabControl.add(self.tab1, text='Downloader')
         self.tabControl.add(self.tab2, text='Re-encoder')
         self.tabControl.add(self.tab3, text='Merger')
+        self.tabControl.add(self.tab4, text='File Info')
         self.tabControl.pack(expand=1, fill="both")
 
         # --- Tab 1: Downloader ---
@@ -40,6 +43,9 @@ class App(tk.Tk):
 
         # --- Tab 3: Merger ---
         self.create_merger_tab()
+
+        # --- Tab 4: File Info ---
+        self.create_file_info_tab()
 
         self.download_queue = queue.Queue()
         self.worker_thread = threading.Thread(target=self.process_download_queue, daemon=True)
@@ -96,14 +102,25 @@ class App(tk.Tk):
         self.merge_container_option = ttk.OptionMenu(self.tab3, self.merge_container_var, self.merge_containers[0], *self.merge_containers)
         self.merge_container_option.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Merge Video Codec
+        self.merge_video_codec_label = ttk.Label(self.tab3, text="Video Codec:")
+        self.merge_video_codec_label.grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        # For merge, we default to copy, but allow re-encoding
+        # Using full VIDEO_CODECS list which includes "Best" and "copy"
+        self.merge_video_codecs = VIDEO_CODECS 
+        self.merge_video_codec_var = tk.StringVar(self.tab3)
+        self.merge_video_codec_var.set("copy") # Default to copy
+        self.merge_video_codec_option = ttk.OptionMenu(self.tab3, self.merge_video_codec_var, "copy", *self.merge_video_codecs)
+        self.merge_video_codec_option.grid(row=5, column=1, padx=5, pady=5, sticky=tk.EW)
+
         # Recycle Original Checkbox
         self.merge_recycle_var = tk.BooleanVar(value=False)
         self.merge_recycle_check = ttk.Checkbutton(self.tab3, text="Delete original after success (Recycle Bin)", variable=self.merge_recycle_var)
-        self.merge_recycle_check.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        self.merge_recycle_check.grid(row=6, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
 
         # Merge Button
         self.merge_btn_frame = ttk.Frame(self.tab3)
-        self.merge_btn_frame.grid(row=6, column=1, pady=10)
+        self.merge_btn_frame.grid(row=7, column=1, pady=10)
 
         self.merge_button = ttk.Button(self.merge_btn_frame, text="Start Merge", command=self.start_merge)
         self.merge_button.pack(side=tk.LEFT, padx=5)
@@ -116,9 +133,9 @@ class App(tk.Tk):
 
         # Progress
         self.merge_progress_bar = ttk.Progressbar(self.tab3, orient="horizontal", length=300, mode="determinate")
-        self.merge_progress_bar.grid(row=7, column=0, columnspan=3, padx=5, pady=5)
+        self.merge_progress_bar.grid(row=8, column=0, columnspan=3, padx=5, pady=5)
         self.merge_status_label = ttk.Label(self.tab3, text="Status: Idle")
-        self.merge_status_label.grid(row=8, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.merge_status_label.grid(row=9, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.tab3.columnconfigure(1, weight=1)
 
@@ -182,6 +199,7 @@ class App(tk.Tk):
         output_dir = self.merge_output_dir_entry.get()
         output_filename = self.merge_output_filename_entry.get()
         container = self.merge_container_var.get()
+        video_codec = self.merge_video_codec_var.get()
 
         if not output_dir or not output_filename:
              messagebox.showerror("Error", "Please specify output directory and filename.")
@@ -221,10 +239,10 @@ class App(tk.Tk):
 
         self.me_controller = TaskController()
 
-        threading.Thread(target=self._run_merge_task, args=(input_files, output_path, self.merge_recycle_var.get())).start()
+        threading.Thread(target=self._run_merge_task, args=(input_files, output_path, self.merge_recycle_var.get(), video_codec)).start()
 
-    def _run_merge_task(self, input_files, output_path, recycle_original):
-        success, message = merge_videos(input_files, output_path, self.merge_progress_callback, self.me_controller, recycle_original)
+    def _run_merge_task(self, input_files, output_path, recycle_original, video_codec):
+        success, message = merge_videos(input_files, output_path, self.merge_progress_callback, self.me_controller, recycle_original, video_codec)
         self.after(0, self._complete_merge_task, success, message)
 
     def _complete_merge_task(self, success, message):
@@ -245,6 +263,87 @@ class App(tk.Tk):
                 self.merge_progress_bar['value'] = 0
                 self.merge_status_label.config(text="Status: Merge failed.")
                 messagebox.showerror("Error", message)
+
+    def create_file_info_tab(self):
+        # File Selection
+        self.info_file_label = ttk.Label(self.tab4, text="Video File:")
+        self.info_file_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.info_file_entry = ttk.Entry(self.tab4, width=50)
+        self.info_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.info_browse_btn = ttk.Button(self.tab4, text="Browse", command=self.browse_info_file)
+        self.info_browse_btn.grid(row=0, column=2, padx=5, pady=5)
+
+        # Analyze Button
+        self.info_analyze_btn = ttk.Button(self.tab4, text="Analyze File", command=self.analyze_file)
+        self.info_analyze_btn.grid(row=1, column=1, pady=10, sticky=tk.W)
+
+        # Info Display
+        self.info_text = tk.Text(self.tab4, height=15, width=60)
+        self.info_text.grid(row=2, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
+        
+        # Scrollbar
+        self.info_scroll = ttk.Scrollbar(self.tab4, command=self.info_text.yview)
+        self.info_scroll.grid(row=2, column=3, sticky='ns')
+        self.info_text['yscrollcommand'] = self.info_scroll.set
+
+        self.tab4.columnconfigure(1, weight=1)
+        self.tab4.rowconfigure(2, weight=1)
+
+    def browse_info_file(self):
+        file_path = filedialog.askopenfilename(
+            title="Select Video File",
+            filetypes=[("Video files", "*.mp4 *.mkv *.avi *.mov *.flv *.webm *.ts"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.info_file_entry.delete(0, tk.END)
+            self.info_file_entry.insert(0, file_path)
+            self.analyze_file() # Auto analyze
+
+    def analyze_file(self):
+        file_path = self.info_file_entry.get()
+        if not file_path:
+            return
+
+        self.info_text.delete(1.0, tk.END)
+        self.info_text.insert(tk.END, "Analyzing...\n")
+        self.update_idletasks()
+
+        # Run in thread if needed, but ffprobe is usually fast. Main thread for now is likely fine,
+        # but to be safe and consistent, we can just run it synchronously as it returns text.
+        # If it hangs, we might need threading, but typically ffprobe on local file is instant.
+        
+        info, error = get_media_info(file_path)
+        
+        self.info_text.delete(1.0, tk.END)
+        if error:
+            self.info_text.insert(tk.END, f"Error: {error}")
+            return
+
+        # Format Output
+        output = []
+        output.append(f"Filename: {info['filename']}")
+        output.append(f"Size: {info['size']}")
+        output.append(f"Duration: {info['duration']} s")
+        output.append(f"Total Bitrate: {info['bitrate']}")
+        output.append("-" * 30)
+        
+        for stream in info['streams']:
+            if stream['codec_type'] == 'video':
+                output.append(f"[Video Stream #{stream['index']}]")
+                output.append(f"  Codec: {stream['codec_name']} ({stream['profile']})")
+                output.append(f"  Resolution: {stream['resolution']}")
+                output.append(f"  FPS: {stream['fps']}")
+            elif stream['codec_type'] == 'audio':
+                output.append(f"[Audio Stream #{stream['index']}]")
+                output.append(f"  Codec: {stream['codec_name']}")
+                output.append(f"  Sample Rate: {stream['sample_rate']}")
+                output.append(f"  Channels: {stream['channels']}")
+            else:
+                 output.append(f"[{stream['codec_type']} Stream #{stream['index']}]")
+                 output.append(f"  Codec: {stream['codec_name']}")
+            output.append("")
+
+        self.info_text.insert(tk.END, "\n".join(output))
 
     def create_downloader_tab(self):
         # URL

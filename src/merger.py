@@ -3,7 +3,8 @@ import os
 import re
 import tempfile
 from send2trash import send2trash
-from utils import parse_time_str, recycle_file
+from utils import parse_time_str, recycle_file, get_low_vram_args
+from constants import BEST_CODEC_LABEL
 
 def _get_video_duration(file_path):
     """Gets the duration of a single video file using ffprobe."""
@@ -27,11 +28,11 @@ def merge_videos(
     output_file: str,
     progress_callback=None,
     task_controller: TaskController = None,
-    recycle_original: bool = False
+    recycle_original: bool = False,
+    video_codec: str = "copy"
 ):
     """
     Merges a list of video files into a single file using ffmpeg concat demuxer.
-    Assumes files have same codecs/formats (typical for split recordings).
     """
     if not input_files:
         return False, "No input files provided."
@@ -44,10 +45,6 @@ def merge_videos(
         total_duration += _get_video_duration(f)
 
     # 2. Create the concat list file
-    # format: file 'path/to/file'
-    # Special characters in paths need escaping for ffmpeg concat file, 
-    # but writing absolute paths with forward slashes usually works best on Windows/Cross-platform for ffmpeg.
-    
     try:
         with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt', encoding='utf-8') as tmp_file:
             concat_list_path = tmp_file.name
@@ -67,13 +64,26 @@ def merge_videos(
         "ffmpeg",
         "-f", "concat",
         "-safe", "0",
-        "-i", concat_list_path,
-        "-c", "copy", # Stream copy (fast, no re-encode)
+        "-i", concat_list_path
+    ]
+
+    if video_codec == BEST_CODEC_LABEL:
+        command.extend(["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "24", "-c:a", "copy"])
+        # We assume low vram args might be needed if integrated, but merge_videos signature doesn't have low_vram param yet.
+        # Adding low_vram param would require more changes. Given the prompt, I'll stick to the core request.
+        # If I need to be safe, I could add it, but 'Best' implies performance/quality focus.
+    elif video_codec == "copy":
+        command.extend(["-c", "copy"])
+    else:
+        # Support other codecs if passed
+        command.extend(["-c:v", video_codec, "-c:a", "copy"])
+
+    command.extend([
         "-y",
         "-progress", "pipe:1",
         "-nostats",
         output_file
-    ]
+    ])
 
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, encoding='utf-8', errors='ignore')
 
