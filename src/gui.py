@@ -157,7 +157,7 @@ class App(tk.Tk):
             self.merge_dir_browse_btn.grid(row=0, column=2, padx=5, pady=5)
 
     def browse_merge_files(self):
-        files = filedialog.askopenfilenames(title="Select Video Files to Merge")
+        files = filedialog.askopenfilenames(title="Select Media Files to Merge")
         for f in files:
             self.merge_files_listbox.insert(tk.END, f)
 
@@ -223,7 +223,7 @@ class App(tk.Tk):
                 input_files = [f for f in files if f.lower().endswith(tuple(MERGE_VIDEO_EXTENSIONS))]
                 
                 if not input_files:
-                     messagebox.showerror("Error", "No video files found in directory.")
+                     messagebox.showerror("Error", "No supported media files found in directory.")
                      return
             except Exception as e:
                 messagebox.showerror("Error", f"Error reading directory: {e}")

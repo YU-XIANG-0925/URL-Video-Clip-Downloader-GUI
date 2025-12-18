@@ -67,7 +67,11 @@ def merge_videos(
         "-i", concat_list_path
     ]
 
-    if video_codec == BEST_CODEC_LABEL:
+    is_audio_only = output_file.lower().endswith(".mp3")
+
+    if is_audio_only:
+        command.extend(["-c", "copy"])
+    elif video_codec == BEST_CODEC_LABEL:
         command.extend(["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "24", "-c:a", "copy"])
         # We assume low vram args might be needed if integrated, but merge_videos signature doesn't have low_vram param yet.
         # Adding low_vram param would require more changes. Given the prompt, I'll stick to the core request.
