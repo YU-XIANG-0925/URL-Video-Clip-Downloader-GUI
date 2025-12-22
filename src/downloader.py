@@ -10,7 +10,7 @@ import time
 # Since task_utils is separate, it should be fine.
 from task_utils import TaskController
 from utils import get_low_vram_args
-from constants import BEST_CODEC_LABEL
+from constants import BEST_CODEC_LABEL, COPY_CODEC_LABEL
 
 def log_error(error_message: str):
     """Appends a timestamped error message to the .error_log/errors.log file."""
@@ -49,6 +49,7 @@ class DownloadJob:
     progress_hook: Callable = None
     task_controller: TaskController = None
     low_vram: bool = False
+    quality: int = 30
 
 def _run_stoppable_ffmpeg(command, task_controller: TaskController, progress_hook=None, info_prefix="Processing"):
     """Helper to run ffmpeg with stop/pause support via TaskController."""
@@ -141,9 +142,12 @@ def start_download(job: DownloadJob):
                 ]
 
                 if job.video_codec == BEST_CODEC_LABEL:
-                    command.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', '24', '-c:a', 'copy'])
+                    cq_value = str(job.quality) if job.quality is not None else "30"
+                    command.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', cq_value, '-c:a', 'copy'])
                     if job.low_vram:
                          command.extend(get_low_vram_args("hevc_nvenc"))
+                elif job.video_codec == COPY_CODEC_LABEL:
+                    command.extend(['-c', 'copy'])
                 else:
                     command.extend(['-c', 'copy']) # Default to copy for local clips as per original logic if not "Best"
 
@@ -240,9 +244,12 @@ def start_download(job: DownloadJob):
             
             # Add codec options if they are not 'copy'
             if job.video_codec == BEST_CODEC_LABEL:
-                 postprocessor_args.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', '24', '-c:a', 'copy'])
+                 cq_value = str(job.quality) if job.quality is not None else "30"
+                 postprocessor_args.extend(['-c:v', 'hevc_nvenc', '-preset', 'p7', '-cq', cq_value, '-c:a', 'copy'])
                  if job.low_vram:
                     postprocessor_args.extend(get_low_vram_args("hevc_nvenc"))
+            elif job.video_codec == COPY_CODEC_LABEL:
+                postprocessor_args.extend(['-c:v', 'copy', '-c:a', 'copy'])
             elif job.video_codec and job.video_codec != 'copy':
                 postprocessor_args.extend(['-c:v', job.video_codec])
                 if job.low_vram:

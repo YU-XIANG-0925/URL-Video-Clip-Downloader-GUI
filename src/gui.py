@@ -396,23 +396,36 @@ class App(tk.Tk):
         self.audio_codec_option = ttk.OptionMenu(self.tab1, self.audio_codec_var, self.audio_codecs[0], *self.audio_codecs)
         self.audio_codec_option.grid(row=6, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Quality (CQ/CRF)
+        self.dl_quality_label = ttk.Label(self.tab1, text="Quality (CQ/CRF) [0-51]:")
+        self.dl_quality_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.dl_quality_var = tk.IntVar(value=30)
+        self.dl_quality_scale = tk.Scale(self.tab1, from_=0, to=51, orient=tk.HORIZONTAL, variable=self.dl_quality_var)
+        self.dl_quality_scale.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
+
+        # Add trace to video codec var to reset quality for Best Codec
+        def on_dl_codec_change(*args):
+            if self.video_codec_var.get() == BEST_CODEC_LABEL:
+                self.dl_quality_var.set(30)
+        self.video_codec_var.trace_add("write", on_dl_codec_change)
+
         # Container Format
         self.container_format_label = ttk.Label(self.tab1, text="Container Format:")
-        self.container_format_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.container_format_label.grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
         self.container_formats = CONTAINER_FORMATS
         self.container_format_var = tk.StringVar(self.tab1)
         self.container_format_var.set(self.container_formats[0]) # Default to mp4
         self.container_format_option = ttk.OptionMenu(self.tab1, self.container_format_var, self.container_formats[0], *self.container_formats)
-        self.container_format_option.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.container_format_option.grid(row=8, column=1, padx=5, pady=5, sticky=tk.EW)
 
         # Low VRAM Mode Checkbox
         self.dl_low_vram_var = tk.BooleanVar(value=False)
         self.dl_low_vram_check = ttk.Checkbutton(self.tab1, text="Low VRAM Mode (Prevent Lag)", variable=self.dl_low_vram_var)
-        self.dl_low_vram_check.grid(row=7, column=2, padx=5, pady=5, sticky=tk.W)
+        self.dl_low_vram_check.grid(row=8, column=2, padx=5, pady=5, sticky=tk.W)
 
         # Download Button
         self.download_btn_frame = ttk.Frame(self.tab1)
-        self.download_btn_frame.grid(row=8, column=1, pady=10)
+        self.download_btn_frame.grid(row=9, column=1, pady=10)
         
         self.download_button = ttk.Button(self.download_btn_frame, text="Start Download", command=self.start_download)
         self.download_button.pack(side=tk.LEFT, padx=5)
@@ -425,9 +438,9 @@ class App(tk.Tk):
 
         # Progress
         self.progress_bar = ttk.Progressbar(self.tab1, orient="horizontal", length=300, mode="determinate")
-        self.progress_bar.grid(row=9, column=0, columnspan=3, padx=5, pady=5)
+        self.progress_bar.grid(row=10, column=0, columnspan=3, padx=5, pady=5)
         self.status_label = ttk.Label(self.tab1, text="Status: Idle")
-        self.status_label.grid(row=10, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.status_label.grid(row=11, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.tab1.columnconfigure(1, weight=1)
 
@@ -492,28 +505,41 @@ class App(tk.Tk):
         self.re_audio_codec_option = ttk.OptionMenu(self.tab2, self.re_audio_codec_var, self.audio_codecs[0], *self.audio_codecs)
         self.re_audio_codec_option.grid(row=6, column=1, padx=5, pady=5, sticky=tk.EW)
 
+        # Quality (CQ/CRF)
+        self.re_quality_label = ttk.Label(self.tab2, text="Quality (CQ/CRF) [0-51]:")
+        self.re_quality_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.re_quality_var = tk.IntVar(value=30)
+        self.re_quality_scale = tk.Scale(self.tab2, from_=0, to=51, orient=tk.HORIZONTAL, variable=self.re_quality_var)
+        self.re_quality_scale.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
+        
+        # Add trace to video codec var to reset quality for Best Codec
+        def on_codec_change(*args):
+            if self.re_video_codec_var.get() == BEST_CODEC_LABEL:
+                self.re_quality_var.set(30)
+        self.re_video_codec_var.trace_add("write", on_codec_change)
+
         # Container Format
         self.re_container_format_label = ttk.Label(self.tab2, text="Container Format:")
-        self.re_container_format_label.grid(row=7, column=0, padx=5, pady=5, sticky=tk.W)
+        self.re_container_format_label.grid(row=8, column=0, padx=5, pady=5, sticky=tk.W)
         self.container_formats = CONTAINER_FORMATS
         self.re_container_format_var = tk.StringVar(self.tab2)
         self.re_container_format_var.set(self.container_formats[0]) # Default to mp4
         self.re_container_format_option = ttk.OptionMenu(self.tab2, self.re_container_format_var, self.container_formats[0], *self.container_formats)
-        self.re_container_format_option.grid(row=7, column=1, padx=5, pady=5, sticky=tk.EW)
+        self.re_container_format_option.grid(row=8, column=1, padx=5, pady=5, sticky=tk.EW)
 
         # Low VRAM Mode Checkbox
         self.re_low_vram_var = tk.BooleanVar(value=False)
         self.re_low_vram_check = ttk.Checkbutton(self.tab2, text="Low VRAM Mode (Prevent Lag)", variable=self.re_low_vram_var)
-        self.re_low_vram_check.grid(row=7, column=2, padx=5, pady=5, sticky=tk.W)
+        self.re_low_vram_check.grid(row=8, column=2, padx=5, pady=5, sticky=tk.W)
 
         # Recycle Original Checkbox
         self.re_recycle_var = tk.BooleanVar(value=False)
         self.re_recycle_check = ttk.Checkbutton(self.tab2, text="Delete original after success (Recycle Bin)", variable=self.re_recycle_var)
-        self.re_recycle_check.grid(row=8, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
+        self.re_recycle_check.grid(row=9, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W)
 
         # Re-encode Button
         self.re_btn_frame = ttk.Frame(self.tab2)
-        self.re_btn_frame.grid(row=9, column=1, pady=10)
+        self.re_btn_frame.grid(row=10, column=1, pady=10)
 
         self.re_encode_button = ttk.Button(self.re_btn_frame, text="Start Re-encode", command=self.start_reencode)
         self.re_encode_button.pack(side=tk.LEFT, padx=5)
@@ -526,9 +552,9 @@ class App(tk.Tk):
 
         # Progress
         self.re_progress_bar = ttk.Progressbar(self.tab2, orient="horizontal", length=300, mode="determinate")
-        self.re_progress_bar.grid(row=10, column=0, columnspan=3, padx=5, pady=5)
+        self.re_progress_bar.grid(row=11, column=0, columnspan=3, padx=5, pady=5)
         self.re_status_label = ttk.Label(self.tab2, text="Status: Idle")
-        self.re_status_label.grid(row=11, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+        self.re_status_label.grid(row=12, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
 
         self.tab2.columnconfigure(1, weight=1)
 
@@ -614,7 +640,8 @@ class App(tk.Tk):
             container_format=self.container_format_var.get(),
             progress_hook=self.progress_hook,
             task_controller=controller,
-            low_vram=self.dl_low_vram_var.get()
+            low_vram=self.dl_low_vram_var.get(),
+            quality=self.dl_quality_var.get()
         )
         self.download_queue.put(job)
         self.status_label.config(text=f"Status: Queued {job.url}")
@@ -687,6 +714,7 @@ class App(tk.Tk):
         container_format = self.re_container_format_var.get()
         re_mode = self.re_mode_var.get()
         file_types = self.re_batch_filetypes_entry.get()
+        quality = self.re_quality_var.get()
 
         if not input_path or not output_dir:
             messagebox.showerror("Error", "Please fill in all required re-encoding fields.")
@@ -706,9 +734,9 @@ class App(tk.Tk):
 
         # Run re-encoding in a separate thread to keep GUI responsive
         threading.Thread(target=self._run_reencode_task,
-                         args=(input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, self.re_low_vram_var.get(), self.re_recycle_var.get())).start()
+                         args=(input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, self.re_low_vram_var.get(), self.re_recycle_var.get(), quality)).start()
 
-    def _run_reencode_task(self, input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, low_vram, recycle_original):
+    def _run_reencode_task(self, input_path, output_dir, output_filename, video_codec, audio_codec, container_format, re_mode, file_types, low_vram, recycle_original, quality):
         success, message = reencode_video(
             input_path,
             output_dir,
@@ -721,7 +749,8 @@ class App(tk.Tk):
             self.reencode_progress_callback,
             self.re_controller,
             low_vram,
-            recycle_original
+            recycle_original,
+            quality
         )
         self.after(0, self._complete_reencode_task, success, message)
 

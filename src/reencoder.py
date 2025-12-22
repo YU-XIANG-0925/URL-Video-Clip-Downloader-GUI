@@ -4,9 +4,9 @@ import threading
 import re
 from send2trash import send2trash
 
-from constants import BEST_CODEC_LABEL
+from constants import BEST_CODEC_LABEL, COPY_CODEC_LABEL
 from task_utils import TaskController
-from utils import get_low_vram_args, parse_time_str, recycle_file
+from utils import get_low_vram_args, parse_time_str, recycle_file, get_media_info, format_size
 
 def _run_ffmpeg_command(
     input_file: str,
@@ -15,7 +15,8 @@ def _run_ffmpeg_command(
     audio_codec: str,
     progress_callback=None,
     task_controller: TaskController = None,
-    low_vram: bool = False
+    low_vram: bool = False,
+    quality: int = 30
 ):
     command = [
         "ffmpeg",
@@ -23,8 +24,12 @@ def _run_ffmpeg_command(
     ]
 
     if video_codec == BEST_CODEC_LABEL:
-        # Best settings: HEVC NVENC, Preset P7 (Best Quality), CQ 24, Audio Copy
-        command.extend(["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "24", "-c:a", "copy"])
+        # Best settings: HEVC NVENC, Preset P7 (Best Quality), CQ {quality}, Audio Copy
+        # Adjusted CQ based on user input or default 30
+        cq_value = str(quality) if quality is not None else "30"
+        command.extend(["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", cq_value, "-c:a", "copy"])
+    elif video_codec == COPY_CODEC_LABEL:
+        command.extend(["-c:v", "copy", "-c:a", "copy"])
     else:
         command.extend(["-c:v", video_codec, "-c:a", audio_codec])
 
@@ -120,23 +125,88 @@ def reencode_video(
     progress_callback=None,
     task_controller: TaskController = None,
     low_vram: bool = False,
-    recycle_original: bool = False
+    recycle_original: bool = False,
+    quality: int = 30
 ):
     if mode == "single":
         if not output_filename:
             return False, "Output filename is required for single file re-encoding."
         
         full_output_file = os.path.join(output_path, f"{output_filename}.{container_format}")
+        
+        # Capture Info Before (Pre-flight)
+        orig_info, _ = get_media_info(input_path)
+        
         success, error_msg = _run_ffmpeg_command(
-            input_path, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram
+            input_path, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram, quality
         )
         if success:
+            # Capture Info After (Post-flight)
+            new_info, _ = get_media_info(full_output_file)
+            
+            # Construct Comparison Message
+            comparison_msg = ""
+            if orig_info and new_info:
+                try:
+                    # Helper to extract first video codec
+                    def get_v_codec(info):
+                        for s in info['streams']:
+                            if s['codec_type'] == 'video': return s['codec_name']
+                        return "unknown"
+
+                    orig_size_str = orig_info['size']
+                    new_size_str = new_info['size']
+                    orig_codec = get_v_codec(orig_info)
+                    new_codec = get_v_codec(new_info)
+                    orig_bitrate = orig_info['bitrate']
+                    new_bitrate = new_info['bitrate']
+                    
+                    # Calculate raw size difference for percentage (parse back or just file size)
+                    orig_bytes = os.path.getsize(input_path) if os.path.exists(input_path) else 0 # Careful if recycled
+                    # Wait, if recycled, input_path is gone. We need to grab size BEFORE recycling.
+                    # We can use os.path.getsize on input_path right now if it's not recycled yet.
+                    # Logic below handles recycling AFTER this block? No, look at original code.
+                    
+                    # Correction: We must do this comparison block BEFORE recycling.
+                    new_bytes = os.path.getsize(full_output_file)
+                    
+                    # If we recycle, we can't get orig_bytes via os.path.getsize(input_path) afterwards.
+                    # But we called get_media_info earlier which got formatted size. 
+                    # Let's trust we have the file currently if we haven't recycled yet.
+                    
+                    if os.path.exists(input_path):
+                        orig_bytes = os.path.getsize(input_path)
+                    else:
+                        orig_bytes = 0 # Should not happen if flow is correct
+
+                    diff_bytes = orig_bytes - new_bytes
+                    percent = (diff_bytes / orig_bytes * 100) if orig_bytes > 0 else 0
+                    
+                    saved_str = format_size(diff_bytes)
+                    sign = "-" if diff_bytes > 0 else "+" # - means saved (less size), but for "Space Saved" positive is good.
+                    # Let's say: "Compression: -70% (Saved 70MB)" or "+10% (Larger)"
+                    
+                    comp_text = f"壓縮率: {percent:.1f}%"
+                    if diff_bytes > 0:
+                        comp_text += f" (節省 {saved_str})"
+                    else:
+                        comp_text += f" (增加 {format_size(abs(diff_bytes))})"
+
+                    comparison_msg = (
+                        f"\n\n[前後對比]\n"
+                        f"原始: {orig_size_str} ({orig_codec}, {orig_bitrate})\n"
+                        f"輸出: {new_size_str} ({new_codec}, {new_bitrate})\n"
+                        f"{comp_text}"
+                    )
+                except Exception as e:
+                    comparison_msg = f"\n(無法產生對比報告: {e})"
+
             if recycle_original:
                 if recycle_file(input_path):
-                    return True, "Re-encoding completed successfully. Original file moved to Recycle Bin."
+                    return True, f"Re-encoding completed successfully. Original file moved to Recycle Bin.{comparison_msg}"
                 else:
-                    return True, "Re-encoding successful, but failed to recycle original."
-            return True, "Re-encoding completed successfully."
+                    return True, f"Re-encoding successful, but failed to recycle original.{comparison_msg}"
+            return True, f"Re-encoding completed successfully.{comparison_msg}"
         else:
             return False, f"Single file re-encoding failed: {error_msg}"
 
@@ -152,6 +222,9 @@ def reencode_video(
         reencoded_count = 0
         failed_files = []
         recycled_count = 0
+        
+        total_orig_bytes = 0
+        total_new_bytes = 0
 
         for root, _, files in os.walk(input_path):
             if task_controller and task_controller.is_stopped():
@@ -175,12 +248,23 @@ def reencode_video(
 
                     if progress_callback:
                         progress_callback(0, f"Processing file: {relative_path}")
+                    
+                    # Capture size before processing
+                    current_orig_size = 0
+                    if os.path.exists(input_file):
+                        current_orig_size = os.path.getsize(input_file)
 
                     success, error_msg = _run_ffmpeg_command(
-                        input_file, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram
+                        input_file, full_output_file, video_codec, audio_codec, progress_callback, task_controller, low_vram, quality
                     )
                     if success:
                         reencoded_count += 1
+                        
+                        # Accumulate stats
+                        total_orig_bytes += current_orig_size
+                        if os.path.exists(full_output_file):
+                            total_new_bytes += os.path.getsize(full_output_file)
+
                         if recycle_original:
                             if recycle_file(input_file):
                                 recycled_count += 1
@@ -189,14 +273,28 @@ def reencode_video(
         
         if task_controller and task_controller.is_stopped():
              return False, "Batch re-encoding stopped by user."
+        
+        # Batch Summary Stats
+        stats_msg = ""
+        if total_orig_bytes > 0:
+            diff_bytes = total_orig_bytes - total_new_bytes
+            percent = (diff_bytes / total_orig_bytes * 100)
+            saved_str = format_size(diff_bytes)
+            
+            stats_msg = (
+                f"\n\n[批次統計]\n"
+                f"總原始大小: {format_size(total_orig_bytes)}\n"
+                f"總輸出大小: {format_size(total_new_bytes)}\n"
+                f"空間節省: {format_size(diff_bytes)} ({percent:.1f}%)"
+            )
 
-        result_msg = f"Batch re-encoding completed. {reencoded_count} files re-encoded successfully."
+        result_msg = f"Batch re-encoding completed. {reencoded_count} files re-encoded successfully.{stats_msg}"
         if recycle_original:
-            result_msg += f" {recycled_count} original files moved to Recycle Bin."
+            result_msg += f"\n{recycled_count} original files moved to Recycle Bin."
             
         if not failed_files:
             return True, result_msg
         else:
-            return False, f"{result_msg} {len(failed_files)} failures: {'; '.join(failed_files)}"
+            return False, f"{result_msg}\n{len(failed_files)} failures: {'; '.join(failed_files)}"
 
     return False, "Invalid re-encoding mode specified."
