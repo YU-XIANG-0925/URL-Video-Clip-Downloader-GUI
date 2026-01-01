@@ -39,7 +39,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("🎵 URL Video Clip Downloader")
-        self.geometry("950x650")
+        # 設定全螢幕模式
+        self.state("zoomed")  # Windows 全螢幕
 
         # === 深色音樂風格主題配置 ===
         self.colors = {
@@ -100,6 +101,14 @@ class App(tk.Tk):
         self.tabControl.add(self.tab5, text="✏️ Editor")
         self.tabControl.add(self.tab6, text="📊 File Info")
         self.tabControl.pack(expand=1, fill="both", padx=10, pady=10)
+
+        # === 結束程式按鈕 ===
+        exit_frame = ttk.Frame(self, style="Music.TFrame")
+        exit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+
+        ttk.Button(
+            exit_frame, text="❌ 結束程式", command=self.quit_app, style="Music.TButton"
+        ).pack(side=tk.RIGHT, padx=10)
 
         # --- Tab 1: Downloader ---
         self.create_downloader_tab()
@@ -2129,6 +2138,13 @@ class App(tk.Tk):
         else:
             self.editor_status_label.config(text=f"狀態：匯出失敗")
             messagebox.showerror("錯誤", message)
+
+    def quit_app(self):
+        """結束程式"""
+        # 關閉編輯器的影片讀取器
+        if self.editor_video_reader:
+            self.editor_video_reader.close()
+        self.destroy()
 
 
 if __name__ == "__main__":
