@@ -100,15 +100,17 @@ class App(tk.Tk):
         self.tabControl.add(self.tab4, text="✂️ Clipper")
         self.tabControl.add(self.tab5, text="✏️ Editor")
         self.tabControl.add(self.tab6, text="📊 File Info")
-        self.tabControl.pack(expand=1, fill="both", padx=10, pady=10)
 
-        # === 結束程式按鈕 ===
+        # === 結束程式按鈕（先 pack 以確保在底部）===
         exit_frame = ttk.Frame(self, style="Music.TFrame")
-        exit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=5)
+        exit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=8)
 
         ttk.Button(
             exit_frame, text="❌ 結束程式", command=self.quit_app, style="Music.TButton"
         ).pack(side=tk.RIGHT, padx=10)
+
+        # 然後再 pack tabControl（佔據剩餘空間）
+        self.tabControl.pack(expand=1, fill="both", padx=10, pady=10)
 
         # --- Tab 1: Downloader ---
         self.create_downloader_tab()
@@ -285,157 +287,209 @@ class App(tk.Tk):
         )
 
     def create_merger_tab(self):
-        # Merge Mode Selection
-        self.merge_mode_var = tk.StringVar(self.tab3, value="selected")
-        self.merge_selected_radio = ttk.Radiobutton(
-            self.tab3,
-            text="Selected Files",
+        """建立 Merger 分頁 - 深色音樂風格"""
+
+        # 主要內容框架
+        main_frame = ttk.Frame(self.tab3, style="Music.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        # === 輸入模式區塊 ===
+        mode_frame = ttk.LabelFrame(
+            main_frame, text="📥 輸入模式", style="Music.TLabelframe"
+        )
+        mode_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.merge_mode_var = tk.StringVar(value="selected")
+        ttk.Radiobutton(
+            mode_frame,
+            text="🎬 選擇檔案",
             variable=self.merge_mode_var,
             value="selected",
             command=self.update_merge_input_ui,
-        )
-        self.merge_selected_radio.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        self.merge_dir_radio = ttk.Radiobutton(
-            self.tab3,
-            text="Directory",
+            style="Music.TRadiobutton",
+        ).pack(side=tk.LEFT, padx=20, pady=10)
+        ttk.Radiobutton(
+            mode_frame,
+            text="📁 整個目錄",
             variable=self.merge_mode_var,
             value="directory",
             command=self.update_merge_input_ui,
-        )
-        self.merge_dir_radio.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+            style="Music.TRadiobutton",
+        ).pack(side=tk.LEFT, padx=20, pady=10)
 
-        # Input UI Container (Dynamic)
-        self.merge_input_frame = ttk.Frame(self.tab3)
-        self.merge_input_frame.grid(
-            row=1, column=0, columnspan=3, padx=5, pady=5, sticky=tk.EW
+        # === 輸入區塊 ===
+        input_frame = ttk.LabelFrame(
+            main_frame, text="📂 輸入檔案", style="Music.TLabelframe"
         )
-        self.merge_input_frame.columnconfigure(1, weight=1)
+        input_frame.pack(fill=tk.X, pady=(0, 10))
 
-        # Initial Setup (Selected Files Mode)
+        self.merge_input_frame = ttk.Frame(input_frame, style="Music.TFrame")
+        self.merge_input_frame.pack(fill=tk.X, padx=10, pady=10)
+        self.merge_input_frame.columnconfigure(0, weight=1)
+
+        # 檔案清單 (Selected Files Mode)
         self.merge_files_listbox = tk.Listbox(
-            self.merge_input_frame, height=5, selectmode=tk.EXTENDED
+            self.merge_input_frame,
+            height=5,
+            selectmode=tk.EXTENDED,
+            bg=self.colors["entry_bg"],
+            fg=self.colors["text"],
+            font=("Segoe UI", 10),
+            selectbackground=self.colors["accent"],
         )
-        self.merge_files_listbox.grid(row=0, column=0, columnspan=2, sticky=tk.EW)
-        self.merge_files_btn_frame = ttk.Frame(self.merge_input_frame)
-        self.merge_files_btn_frame.grid(row=0, column=2, sticky=tk.NS)
+        self.merge_files_listbox.grid(row=0, column=0, sticky=tk.EW, padx=(0, 10))
+
+        self.merge_files_btn_frame = ttk.Frame(
+            self.merge_input_frame, style="Music.TFrame"
+        )
+        self.merge_files_btn_frame.grid(row=0, column=1, sticky=tk.NS)
         self.merge_add_files_btn = ttk.Button(
             self.merge_files_btn_frame,
-            text="Add Files",
+            text="新增檔案",
             command=self.browse_merge_files,
+            style="Music.TButton",
         )
         self.merge_add_files_btn.pack(fill=tk.X, pady=2)
         self.merge_clear_files_btn = ttk.Button(
             self.merge_files_btn_frame,
-            text="Clear",
+            text="清除",
             command=lambda: self.merge_files_listbox.delete(0, tk.END),
+            style="Music.TButton",
         )
         self.merge_clear_files_btn.pack(fill=tk.X, pady=2)
 
         # Directory UI (Hidden initially)
         self.merge_dir_label = ttk.Label(
-            self.merge_input_frame, text="Input Directory:"
+            self.merge_input_frame, text="輸入目錄:", style="Music.TLabel"
         )
-        self.merge_dir_entry = ttk.Entry(self.merge_input_frame)
+        self.merge_dir_entry = ttk.Entry(
+            self.merge_input_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
         self.merge_dir_browse_btn = ttk.Button(
-            self.merge_input_frame, text="Browse", command=self.browse_merge_dir
+            self.merge_input_frame,
+            text="瀏覽",
+            command=self.browse_merge_dir,
+            style="Music.TButton",
         )
+
+        # === 輸出設定區塊 ===
+        output_frame = ttk.LabelFrame(
+            main_frame, text="📁 輸出設定", style="Music.TLabelframe"
+        )
+        output_frame.pack(fill=tk.X, pady=(0, 10))
+        output_frame.columnconfigure(1, weight=1)
 
         # Output Directory
-        self.merge_output_dir_label = ttk.Label(self.tab3, text="Output Directory:")
-        self.merge_output_dir_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
-        self.merge_output_dir_entry = ttk.Entry(self.tab3)
-        self.merge_output_dir_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.EW)
-        self.merge_browse_output_btn = ttk.Button(
-            self.tab3, text="Browse", command=self.browse_merge_output_dir
+        ttk.Label(output_frame, text="輸出目錄:", style="Music.TLabel").grid(
+            row=0, column=0, padx=10, pady=8, sticky=tk.W
         )
-        self.merge_browse_output_btn.grid(row=2, column=2, padx=5, pady=5)
+        self.merge_output_dir_entry = ttk.Entry(
+            output_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.merge_output_dir_entry.grid(row=0, column=1, padx=10, pady=8, sticky=tk.EW)
+        self.merge_browse_output_btn = ttk.Button(
+            output_frame,
+            text="瀏覽",
+            command=self.browse_merge_output_dir,
+            style="Music.TButton",
+        )
+        self.merge_browse_output_btn.grid(row=0, column=2, padx=10, pady=8)
 
         # Output Filename
-        self.merge_output_filename_label = ttk.Label(self.tab3, text="Output Filename:")
-        self.merge_output_filename_label.grid(
-            row=3, column=0, padx=5, pady=5, sticky=tk.W
+        ttk.Label(output_frame, text="輸出檔名:", style="Music.TLabel").grid(
+            row=1, column=0, padx=10, pady=8, sticky=tk.W
         )
-        self.merge_output_filename_entry = ttk.Entry(self.tab3)
+        self.merge_output_filename_entry = ttk.Entry(
+            output_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
         self.merge_output_filename_entry.grid(
-            row=3, column=1, padx=5, pady=5, sticky=tk.EW
+            row=1, column=1, padx=10, pady=8, sticky=tk.EW
         )
 
-        # Output Container (optional, for extension)
-        self.merge_container_label = ttk.Label(self.tab3, text="Output Format:")
-        self.merge_container_label.grid(row=4, column=0, padx=5, pady=5, sticky=tk.W)
+        # Output Format
+        ttk.Label(output_frame, text="輸出格式:", style="Music.TLabel").grid(
+            row=2, column=0, padx=10, pady=8, sticky=tk.W
+        )
         self.merge_containers = MERGE_CONTAINER_FORMATS
-        self.merge_container_var = tk.StringVar(self.tab3)
-        self.merge_container_var.set(self.merge_containers[0])
-        self.merge_container_option = ttk.OptionMenu(
-            self.tab3,
+        self.merge_container_var = tk.StringVar(value=self.merge_containers[0])
+        ttk.OptionMenu(
+            output_frame,
             self.merge_container_var,
             self.merge_containers[0],
             *self.merge_containers,
-        )
-        self.merge_container_option.grid(row=4, column=1, padx=5, pady=5, sticky=tk.EW)
+            style="Music.TMenubutton",
+        ).grid(row=2, column=1, padx=10, pady=8, sticky=tk.W)
 
-        # Merge Video Codec
-        self.merge_video_codec_label = ttk.Label(self.tab3, text="Video Codec:")
-        self.merge_video_codec_label.grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
-        # For merge, we default to copy, but allow re-encoding
-        # Using full VIDEO_CODECS list which includes "Best" and "copy"
+        # Video Codec
+        ttk.Label(output_frame, text="影片編碼:", style="Music.TLabel").grid(
+            row=3, column=0, padx=10, pady=8, sticky=tk.W
+        )
         self.merge_video_codecs = VIDEO_CODECS
-        self.merge_video_codec_var = tk.StringVar(self.tab3)
-        self.merge_video_codec_var.set("copy")  # Default to copy
-        self.merge_video_codec_option = ttk.OptionMenu(
-            self.tab3, self.merge_video_codec_var, "copy", *self.merge_video_codecs
-        )
-        self.merge_video_codec_option.grid(
-            row=5, column=1, padx=5, pady=5, sticky=tk.EW
-        )
+        self.merge_video_codec_var = tk.StringVar(value="copy")
+        ttk.OptionMenu(
+            output_frame,
+            self.merge_video_codec_var,
+            "copy",
+            *self.merge_video_codecs,
+            style="Music.TMenubutton",
+        ).grid(row=3, column=1, padx=10, pady=8, sticky=tk.W)
 
-        # Recycle Original Checkbox
+        # Recycle Option
         self.merge_recycle_var = tk.BooleanVar(value=False)
-        self.merge_recycle_check = ttk.Checkbutton(
-            self.tab3,
-            text="Delete original after success (Recycle Bin)",
+        ttk.Checkbutton(
+            output_frame,
+            text="合併成功後刪除原始檔案（移至回收筒）",
             variable=self.merge_recycle_var,
-        )
-        self.merge_recycle_check.grid(
-            row=6, column=0, columnspan=2, padx=5, pady=5, sticky=tk.W
-        )
+            style="Music.TCheckbutton",
+        ).grid(row=4, column=0, columnspan=2, padx=10, pady=8, sticky=tk.W)
 
-        # Merge Button
-        self.merge_btn_frame = ttk.Frame(self.tab3)
-        self.merge_btn_frame.grid(row=7, column=1, pady=10)
+        # === 控制按鈕 ===
+        btn_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        btn_frame.pack(pady=10)
 
         self.merge_button = ttk.Button(
-            self.merge_btn_frame, text="Start Merge", command=self.start_merge
+            btn_frame,
+            text="▶ 開始合併",
+            command=self.start_merge,
+            style="Music.Success.TButton",
         )
-        self.merge_button.pack(side=tk.LEFT, padx=5)
+        self.merge_button.pack(side=tk.LEFT, padx=8)
 
         self.merge_pause_button = ttk.Button(
-            self.merge_btn_frame,
-            text="Pause",
+            btn_frame,
+            text="⏸ 暫停",
             command=self.toggle_merge_pause,
             state=tk.DISABLED,
+            style="Music.Warning.TButton",
         )
-        self.merge_pause_button.pack(side=tk.LEFT, padx=5)
+        self.merge_pause_button.pack(side=tk.LEFT, padx=8)
 
         self.merge_stop_button = ttk.Button(
-            self.merge_btn_frame,
-            text="Stop",
+            btn_frame,
+            text="⏹ 停止",
             command=self.stop_merge,
             state=tk.DISABLED,
+            style="Music.TButton",
         )
-        self.merge_stop_button.pack(side=tk.LEFT, padx=5)
+        self.merge_stop_button.pack(side=tk.LEFT, padx=8)
 
-        # Progress
+        # === 進度區塊 ===
+        progress_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        progress_frame.pack(fill=tk.X, pady=5)
+
         self.merge_progress_bar = ttk.Progressbar(
-            self.tab3, orient="horizontal", length=300, mode="determinate"
+            progress_frame,
+            orient="horizontal",
+            length=400,
+            mode="determinate",
+            style="Music.Horizontal.TProgressbar",
         )
-        self.merge_progress_bar.grid(row=8, column=0, columnspan=3, padx=5, pady=5)
-        self.merge_status_label = ttk.Label(self.tab3, text="Status: Idle")
-        self.merge_status_label.grid(
-            row=9, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W
-        )
+        self.merge_progress_bar.pack(fill=tk.X, pady=5)
 
-        self.tab3.columnconfigure(1, weight=1)
+        self.merge_status_label = ttk.Label(
+            progress_frame, text="狀態：待機中", style="Music.Status.TLabel"
+        )
+        self.merge_status_label.pack(anchor=tk.W, pady=5)
 
     def update_merge_input_ui(self):
         mode = self.merge_mode_var.get()
