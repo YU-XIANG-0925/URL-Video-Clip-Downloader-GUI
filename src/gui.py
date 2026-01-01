@@ -103,14 +103,19 @@ class App(tk.Tk):
 
         # === 結束程式按鈕（先 pack 以確保在底部）===
         exit_frame = ttk.Frame(self, style="Music.TFrame")
-        exit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=8)
+        exit_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=2)
 
-        ttk.Button(
-            exit_frame, text="❌ 結束程式", command=self.quit_app, style="Music.TButton"
-        ).pack(side=tk.RIGHT, padx=10)
+        exit_btn = ttk.Button(
+            exit_frame,
+            text="✕ 結束",
+            command=self.quit_app,
+            style="Music.TButton",
+            width=8,
+        )
+        exit_btn.pack(side=tk.RIGHT, padx=5)
 
         # 然後再 pack tabControl（佔據剩餘空間）
-        self.tabControl.pack(expand=1, fill="both", padx=10, pady=10)
+        self.tabControl.pack(expand=1, fill="both", padx=5, pady=(5, 0))
 
         # --- Tab 1: Downloader ---
         self.create_downloader_tab()
