@@ -3,9 +3,20 @@ from tkinter import ttk, filedialog, messagebox
 import threading
 import queue
 import os
+from PIL import Image, ImageTk
 from downloader import DownloadJob, start_download
 from reencoder import reencode_video
 from merger import merge_videos
+from clipper import ClipJob, start_clip
+from editor import (
+    VideoFrameReader,
+    KeyframeManager,
+    CropRegion,
+    ASPECT_RATIOS,
+    PREVIEW_SIZE,
+    format_time_short,
+    export_video_with_keyframes,
+)
 from task_utils import TaskController
 from constants import (
     VIDEO_CODECS,
@@ -17,6 +28,9 @@ from constants import (
     STREAMING_CODEC_LABEL,
     DOWNLOADER_VIDEO_CODECS,
     DOWNLOADER_AUDIO_CODECS,
+    CLIPPER_MODES,
+    COPY_CODEC_LABEL,
+    PRECISE_CUT_LABEL,
 )
 from utils import get_media_info
 
@@ -59,7 +73,17 @@ class App(tk.Tk):
         self.dl_controller = None
         self.re_controller = None
         self.me_controller = None
+        self.cl_controller = None  # Clipper controller
+        self.ed_controller = None  # Editor controller
         self.current_dl_job = None
+        self.current_cl_job = None  # Clipper job
+
+        # Editor 相關變數
+        self.editor_video_reader = None
+        self.editor_keyframe_manager = KeyframeManager()
+        self.editor_current_time_ms = 0
+        self.editor_crop_rect = None  # Canvas 上的裁切框 ID
+        self.editor_preview_scale = 1.0  # 預覽縮放比例
 
         # Create Tab Control
         self.tabControl = ttk.Notebook(self, style="Music.TNotebook")
@@ -67,10 +91,14 @@ class App(tk.Tk):
         self.tab2 = ttk.Frame(self.tabControl, style="Music.TFrame")
         self.tab3 = ttk.Frame(self.tabControl, style="Music.TFrame")
         self.tab4 = ttk.Frame(self.tabControl, style="Music.TFrame")
+        self.tab5 = ttk.Frame(self.tabControl, style="Music.TFrame")
+        self.tab6 = ttk.Frame(self.tabControl, style="Music.TFrame")
         self.tabControl.add(self.tab1, text="🎬 Downloader")
         self.tabControl.add(self.tab2, text="🔄 Re-encoder")
         self.tabControl.add(self.tab3, text="🔗 Merger")
-        self.tabControl.add(self.tab4, text="📊 File Info")
+        self.tabControl.add(self.tab4, text="✂️ Clipper")
+        self.tabControl.add(self.tab5, text="✏️ Editor")
+        self.tabControl.add(self.tab6, text="📊 File Info")
         self.tabControl.pack(expand=1, fill="both", padx=10, pady=10)
 
         # --- Tab 1: Downloader ---
@@ -82,14 +110,25 @@ class App(tk.Tk):
         # --- Tab 3: Merger ---
         self.create_merger_tab()
 
-        # --- Tab 4: File Info ---
+        # --- Tab 4: Clipper ---
+        self.create_clipper_tab()
+
+        # --- Tab 5: Editor ---
+        self.create_editor_tab()
+
+        # --- Tab 6: File Info ---
         self.create_file_info_tab()
 
         self.download_queue = queue.Queue()
+        self.clipper_queue = queue.Queue()
         self.worker_thread = threading.Thread(
             target=self.process_download_queue, daemon=True
         )
         self.worker_thread.start()
+        self.clipper_worker_thread = threading.Thread(
+            target=self.process_clipper_queue, daemon=True
+        )
+        self.clipper_worker_thread.start()
 
     def _configure_styles(self):
         """配置深色音樂風格的 ttk 樣式"""
@@ -538,36 +577,416 @@ class App(tk.Tk):
                 self.merge_status_label.config(text="Status: Merge failed.")
                 messagebox.showerror("Error", message)
 
-    def create_file_info_tab(self):
-        # File Selection
-        self.info_file_label = ttk.Label(self.tab4, text="Video File:")
-        self.info_file_label.grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
-        self.info_file_entry = ttk.Entry(self.tab4, width=50)
-        self.info_file_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.EW)
-        self.info_browse_btn = ttk.Button(
-            self.tab4, text="Browse", command=self.browse_info_file
+    def create_clipper_tab(self):
+        """建立 Clipper 分頁 - 影片裁切功能"""
+
+        # 主要內容框架
+        main_frame = ttk.Frame(self.tab4, style="Music.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        # === 輸入設定區塊 ===
+        input_frame = ttk.LabelFrame(
+            main_frame, text="📥 輸入設定", style="Music.TLabelframe"
         )
-        self.info_browse_btn.grid(row=0, column=2, padx=5, pady=5)
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+        input_frame.columnconfigure(1, weight=1)
+
+        # Input File
+        ttk.Label(input_frame, text="輸入檔案:", style="Music.TLabel").grid(
+            row=0, column=0, padx=10, pady=8, sticky=tk.W
+        )
+        self.clip_input_entry = ttk.Entry(
+            input_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.clip_input_entry.grid(row=0, column=1, padx=10, pady=8, sticky=tk.EW)
+        ttk.Button(
+            input_frame,
+            text="瀏覽",
+            command=self.browse_clip_input,
+            style="Music.TButton",
+        ).grid(row=0, column=2, padx=10, pady=8)
+
+        # Start Time
+        ttk.Label(input_frame, text="開始時間 (HH:MM:SS):", style="Music.TLabel").grid(
+            row=1, column=0, padx=10, pady=8, sticky=tk.W
+        )
+        self.clip_start_entry = ttk.Entry(
+            input_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.clip_start_entry.grid(row=1, column=1, padx=10, pady=8, sticky=tk.W)
+
+        # End Time
+        ttk.Label(input_frame, text="結束時間 (HH:MM:SS):", style="Music.TLabel").grid(
+            row=2, column=0, padx=10, pady=8, sticky=tk.W
+        )
+        self.clip_end_entry = ttk.Entry(
+            input_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.clip_end_entry.grid(row=2, column=1, padx=10, pady=8, sticky=tk.W)
+
+        # === 輸出設定區塊 ===
+        output_frame = ttk.LabelFrame(
+            main_frame, text="📁 輸出設定", style="Music.TLabelframe"
+        )
+        output_frame.pack(fill=tk.X, pady=(0, 10))
+        output_frame.columnconfigure(1, weight=1)
+
+        # Output Path
+        ttk.Label(output_frame, text="輸出路徑:", style="Music.TLabel").grid(
+            row=0, column=0, padx=10, pady=8, sticky=tk.W
+        )
+        self.clip_output_path_entry = ttk.Entry(
+            output_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.clip_output_path_entry.grid(row=0, column=1, padx=10, pady=8, sticky=tk.EW)
+        ttk.Button(
+            output_frame,
+            text="瀏覽",
+            command=self.browse_clip_output,
+            style="Music.TButton",
+        ).grid(row=0, column=2, padx=10, pady=8)
+
+        # Output Filename
+        ttk.Label(output_frame, text="輸出檔名:", style="Music.TLabel").grid(
+            row=1, column=0, padx=10, pady=8, sticky=tk.W
+        )
+        self.clip_output_name_entry = ttk.Entry(
+            output_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.clip_output_name_entry.grid(row=1, column=1, padx=10, pady=8, sticky=tk.EW)
+
+        # === 裁切模式區塊 ===
+        mode_frame = ttk.LabelFrame(
+            main_frame, text="⚙️ 裁切模式", style="Music.TLabelframe"
+        )
+        mode_frame.pack(fill=tk.X, pady=(0, 10))
+
+        self.clip_mode_var = tk.StringVar(value=COPY_CODEC_LABEL)
+
+        ttk.Radiobutton(
+            mode_frame,
+            text="🚀 快速裁切（從最近的關鍵幀開始，可能有幾秒誤差）",
+            variable=self.clip_mode_var,
+            value=COPY_CODEC_LABEL,
+            style="Music.TRadiobutton",
+        ).pack(anchor=tk.W, padx=10, pady=5)
+
+        ttk.Radiobutton(
+            mode_frame,
+            text="🎯 精確裁切（重新編碼，100% 精確但需要較長時間）",
+            variable=self.clip_mode_var,
+            value=PRECISE_CUT_LABEL,
+            style="Music.TRadiobutton",
+        ).pack(anchor=tk.W, padx=10, pady=5)
+
+        # Container Format
+        format_frame = ttk.Frame(mode_frame, style="Music.TFrame")
+        format_frame.pack(fill=tk.X, padx=10, pady=5)
+        ttk.Label(format_frame, text="容器格式:", style="Music.TLabel").pack(
+            side=tk.LEFT
+        )
+        self.clip_format_var = tk.StringVar(value="mp4")
+        ttk.OptionMenu(
+            format_frame,
+            self.clip_format_var,
+            "mp4",
+            *CONTAINER_FORMATS,
+            style="Music.TMenubutton",
+        ).pack(side=tk.LEFT, padx=10)
+
+        # === 控制按鈕 ===
+        btn_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        btn_frame.pack(pady=10)
+
+        self.clip_start_btn = ttk.Button(
+            btn_frame,
+            text="▶ 開始裁切",
+            command=self.start_clip_job,
+            style="Music.Success.TButton",
+        )
+        self.clip_start_btn.pack(side=tk.LEFT, padx=8)
+
+        self.clip_pause_btn = ttk.Button(
+            btn_frame,
+            text="⏸ 暫停",
+            command=self.toggle_clip_pause,
+            state=tk.DISABLED,
+            style="Music.Warning.TButton",
+        )
+        self.clip_pause_btn.pack(side=tk.LEFT, padx=8)
+
+        self.clip_stop_btn = ttk.Button(
+            btn_frame,
+            text="⏹ 停止",
+            command=self.stop_clip,
+            state=tk.DISABLED,
+            style="Music.TButton",
+        )
+        self.clip_stop_btn.pack(side=tk.LEFT, padx=8)
+
+        # === 進度區塊 ===
+        progress_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        progress_frame.pack(fill=tk.X, pady=5)
+
+        self.clip_progress_bar = ttk.Progressbar(
+            progress_frame,
+            orient="horizontal",
+            length=400,
+            mode="indeterminate",
+            style="Music.Horizontal.TProgressbar",
+        )
+        self.clip_progress_bar.pack(fill=tk.X, pady=5)
+
+        self.clip_status_label = ttk.Label(
+            progress_frame, text="狀態：待機中", style="Music.Status.TLabel"
+        )
+        self.clip_status_label.pack(anchor=tk.W, pady=5)
+
+    def create_editor_tab(self):
+        """建立 Editor 分頁 - 進階影片編輯器"""
+
+        # 主要框架 - 使用 PanedWindow 分割預覽和控制區
+        main_frame = ttk.Frame(self.tab5, style="Music.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # === 上方：檔案選擇 ===
+        file_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        file_frame.pack(fill=tk.X, pady=(0, 5))
+
+        ttk.Button(
+            file_frame,
+            text="📂 載入影片",
+            command=self.editor_load_video,
+            style="Music.TButton",
+        ).pack(side=tk.LEFT, padx=5)
+
+        self.editor_file_label = ttk.Label(
+            file_frame, text="尚未載入影片", style="Music.TLabel"
+        )
+        self.editor_file_label.pack(side=tk.LEFT, padx=10)
+
+        # === 中間：預覽區域 ===
+        preview_container = ttk.LabelFrame(
+            main_frame, text="🎬 預覽", style="Music.TLabelframe"
+        )
+        preview_container.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # 預覽 Canvas
+        self.editor_canvas = tk.Canvas(
+            preview_container,
+            width=PREVIEW_SIZE[0],
+            height=PREVIEW_SIZE[1],
+            bg=self.colors["bg_medium"],
+            highlightthickness=0,
+        )
+        self.editor_canvas.pack(padx=5, pady=5)
+
+        # 綁定滑鼠事件（用於拖動裁切框）
+        self.editor_canvas.bind("<Button-1>", self.editor_on_canvas_click)
+        self.editor_canvas.bind("<B1-Motion>", self.editor_on_canvas_drag)
+        self.editor_canvas.bind("<ButtonRelease-1>", self.editor_on_canvas_release)
+
+        # === 時間軸區域 ===
+        timeline_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        timeline_frame.pack(fill=tk.X, pady=5)
+
+        self.editor_time_label = ttk.Label(
+            timeline_frame, text="00:00 / 00:00", style="Music.TLabel"
+        )
+        self.editor_time_label.pack(side=tk.LEFT, padx=5)
+
+        self.editor_timeline_var = tk.IntVar(value=0)
+        self.editor_timeline = ttk.Scale(
+            timeline_frame,
+            from_=0,
+            to=1000,
+            orient=tk.HORIZONTAL,
+            variable=self.editor_timeline_var,
+            command=self.editor_on_timeline_change,
+        )
+        self.editor_timeline.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=10)
+
+        # === 裁切設定區域 ===
+        crop_frame = ttk.LabelFrame(
+            main_frame, text="✂️ 裁切設定", style="Music.TLabelframe"
+        )
+        crop_frame.pack(fill=tk.X, pady=5)
+
+        # 比例選擇
+        ratio_frame = ttk.Frame(crop_frame, style="Music.TFrame")
+        ratio_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(ratio_frame, text="輸出比例:", style="Music.TLabel").pack(
+            side=tk.LEFT
+        )
+
+        self.editor_ratio_var = tk.StringVar(value="自由")
+        for ratio_name in ASPECT_RATIOS.keys():
+            ttk.Radiobutton(
+                ratio_frame,
+                text=ratio_name,
+                value=ratio_name,
+                variable=self.editor_ratio_var,
+                style="Music.TRadiobutton",
+                command=self.editor_on_ratio_change,
+            ).pack(side=tk.LEFT, padx=5)
+
+        # 輸出尺寸
+        size_frame = ttk.Frame(crop_frame, style="Music.TFrame")
+        size_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(size_frame, text="輸出尺寸:", style="Music.TLabel").pack(side=tk.LEFT)
+        self.editor_width_var = tk.StringVar(value="600")
+        ttk.Entry(
+            size_frame,
+            textvariable=self.editor_width_var,
+            width=6,
+            style="Music.TEntry",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=5)
+        ttk.Label(size_frame, text="×", style="Music.TLabel").pack(side=tk.LEFT)
+        self.editor_height_var = tk.StringVar(value="400")
+        ttk.Entry(
+            size_frame,
+            textvariable=self.editor_height_var,
+            width=6,
+            style="Music.TEntry",
+            font=("Segoe UI", 10),
+        ).pack(side=tk.LEFT, padx=5)
+
+        # === 關鍵幀控制 ===
+        keyframe_frame = ttk.LabelFrame(
+            main_frame, text="🔑 關鍵幀", style="Music.TLabelframe"
+        )
+        keyframe_frame.pack(fill=tk.X, pady=5)
+
+        kf_btn_frame = ttk.Frame(keyframe_frame, style="Music.TFrame")
+        kf_btn_frame.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Button(
+            kf_btn_frame,
+            text="➕ 新增關鍵幀",
+            command=self.editor_add_keyframe,
+            style="Music.Success.TButton",
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            kf_btn_frame,
+            text="🗑️ 刪除",
+            command=self.editor_remove_keyframe,
+            style="Music.TButton",
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            kf_btn_frame,
+            text="🔄 清除全部",
+            command=self.editor_clear_keyframes,
+            style="Music.TButton",
+        ).pack(side=tk.LEFT, padx=5)
+
+        # 關鍵幀列表
+        self.editor_keyframe_list = ttk.Label(
+            keyframe_frame, text="尚未設定關鍵幀", style="Music.TLabel"
+        )
+        self.editor_keyframe_list.pack(padx=10, pady=5, anchor=tk.W)
+
+        # === 匯出設定 ===
+        export_frame = ttk.Frame(main_frame, style="Music.TFrame")
+        export_frame.pack(fill=tk.X, pady=10)
+
+        ttk.Label(export_frame, text="輸出路徑:", style="Music.TLabel").pack(
+            side=tk.LEFT, padx=5
+        )
+        self.editor_output_entry = ttk.Entry(
+            export_frame, style="Music.TEntry", font=("Segoe UI", 10), width=40
+        )
+        self.editor_output_entry.pack(side=tk.LEFT, padx=5)
+        ttk.Button(
+            export_frame,
+            text="瀏覽",
+            command=self.editor_browse_output,
+            style="Music.TButton",
+        ).pack(side=tk.LEFT, padx=5)
+
+        ttk.Button(
+            export_frame,
+            text="🎬 匯出影片",
+            command=self.editor_export,
+            style="Music.Success.TButton",
+        ).pack(side=tk.LEFT, padx=20)
+
+        # Editor 狀態
+        self.editor_status_label = ttk.Label(
+            main_frame, text="狀態：待機中", style="Music.Status.TLabel"
+        )
+        self.editor_status_label.pack(anchor=tk.W, pady=5)
+
+        # 裁切框拖動狀態
+        self.editor_drag_start = None
+        self.editor_crop_x = 100
+        self.editor_crop_y = 100
+        self.editor_crop_w = 200
+        self.editor_crop_h = 150
+
+    def create_file_info_tab(self):
+        """建立 File Info 分頁"""
+        # 主要內容框架
+        main_frame = ttk.Frame(self.tab6, style="Music.TFrame")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
+
+        # File Selection Frame
+        file_frame = ttk.LabelFrame(
+            main_frame, text="📁 檔案選擇", style="Music.TLabelframe"
+        )
+        file_frame.pack(fill=tk.X, pady=(0, 10))
+        file_frame.columnconfigure(1, weight=1)
+
+        self.info_file_label = ttk.Label(
+            file_frame, text="影片檔案:", style="Music.TLabel"
+        )
+        self.info_file_label.grid(row=0, column=0, padx=10, pady=8, sticky=tk.W)
+        self.info_file_entry = ttk.Entry(
+            file_frame, style="Music.TEntry", font=("Segoe UI", 10)
+        )
+        self.info_file_entry.grid(row=0, column=1, padx=10, pady=8, sticky=tk.EW)
+        self.info_browse_btn = ttk.Button(
+            file_frame,
+            text="瀏覽",
+            command=self.browse_info_file,
+            style="Music.TButton",
+        )
+        self.info_browse_btn.grid(row=0, column=2, padx=10, pady=8)
 
         # Analyze Button
         self.info_analyze_btn = ttk.Button(
-            self.tab4, text="Analyze File", command=self.analyze_file
+            main_frame,
+            text="🔍 分析檔案",
+            command=self.analyze_file,
+            style="Music.Success.TButton",
         )
-        self.info_analyze_btn.grid(row=1, column=1, pady=10, sticky=tk.W)
+        self.info_analyze_btn.pack(pady=10)
 
-        # Info Display
-        self.info_text = tk.Text(self.tab4, height=15, width=60)
-        self.info_text.grid(
-            row=2, column=0, columnspan=3, padx=5, pady=5, sticky="nsew"
+        # Info Display Frame
+        info_frame = ttk.LabelFrame(
+            main_frame, text="📊 檔案資訊", style="Music.TLabelframe"
         )
+        info_frame.pack(fill=tk.BOTH, expand=True)
+
+        self.info_text = tk.Text(
+            info_frame,
+            height=15,
+            width=60,
+            bg=self.colors["entry_bg"],
+            fg=self.colors["text"],
+            font=("Consolas", 10),
+            insertbackground=self.colors["text"],
+        )
+        self.info_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
 
         # Scrollbar
-        self.info_scroll = ttk.Scrollbar(self.tab4, command=self.info_text.yview)
-        self.info_scroll.grid(row=2, column=3, sticky="ns")
+        self.info_scroll = ttk.Scrollbar(info_frame, command=self.info_text.yview)
+        self.info_scroll.pack(side=tk.RIGHT, fill=tk.Y)
         self.info_text["yscrollcommand"] = self.info_scroll.set
-
-        self.tab4.columnconfigure(1, weight=1)
-        self.tab4.rowconfigure(2, weight=1)
 
     def browse_info_file(self):
         file_path = filedialog.askopenfilename(
@@ -629,7 +1048,7 @@ class App(tk.Tk):
         self.info_text.insert(tk.END, "\n".join(output))
 
     def create_downloader_tab(self):
-        """建立 Downloader 分頁 - 簡化版，只支援 copy 模式下載"""
+        """建立 Downloader 分頁 - 純下載功能（不含裁切）"""
 
         # 主要內容框架
         main_frame = ttk.Frame(self.tab1, style="Music.TFrame")
@@ -643,9 +1062,7 @@ class App(tk.Tk):
         source_frame.columnconfigure(1, weight=1)
 
         # URL
-        self.url_label = ttk.Label(
-            source_frame, text="URL / 本機檔案:", style="Music.TLabel"
-        )
+        self.url_label = ttk.Label(source_frame, text="URL:", style="Music.TLabel")
         self.url_label.grid(row=0, column=0, padx=10, pady=8, sticky=tk.W)
         self.url_entry = ttk.Entry(
             source_frame, style="Music.TEntry", font=("Segoe UI", 10)
@@ -653,26 +1070,6 @@ class App(tk.Tk):
         self.url_entry.grid(
             row=0, column=1, columnspan=2, padx=10, pady=8, sticky=tk.EW
         )
-
-        # Start Time
-        self.start_time_label = ttk.Label(
-            source_frame, text="開始時間 (HH:MM:SS):", style="Music.TLabel"
-        )
-        self.start_time_label.grid(row=1, column=0, padx=10, pady=8, sticky=tk.W)
-        self.start_time_entry = ttk.Entry(
-            source_frame, style="Music.TEntry", font=("Segoe UI", 10)
-        )
-        self.start_time_entry.grid(row=1, column=1, padx=10, pady=8, sticky=tk.EW)
-
-        # End Time
-        self.end_time_label = ttk.Label(
-            source_frame, text="結束時間 (HH:MM:SS):", style="Music.TLabel"
-        )
-        self.end_time_label.grid(row=2, column=0, padx=10, pady=8, sticky=tk.W)
-        self.end_time_entry = ttk.Entry(
-            source_frame, style="Music.TEntry", font=("Segoe UI", 10)
-        )
-        self.end_time_entry.grid(row=2, column=1, padx=10, pady=8, sticky=tk.EW)
 
         # === 輸出設定區塊 ===
         output_frame = ttk.LabelFrame(
@@ -726,18 +1123,20 @@ class App(tk.Tk):
         self.container_format_option.grid(row=2, column=1, padx=10, pady=8, sticky=tk.W)
 
         # === 編碼設定 - 固定為 Copy 模式（隱藏變數） ===
-        # 直接使用 copy 模式，不再顯示編碼選項
         self.video_codec_var = tk.StringVar(self.tab1)
-        self.video_codec_var.set(DOWNLOADER_VIDEO_CODECS[0])  # 固定為 copy 模式
+        self.video_codec_var.set(DOWNLOADER_VIDEO_CODECS[0])
         self.audio_codec_var = tk.StringVar(self.tab1)
-        self.audio_codec_var.set(DOWNLOADER_AUDIO_CODECS[0])  # 固定為 copy
-        self.dl_quality_var = tk.IntVar(value=30)  # 保留變數但不使用
-        self.dl_low_vram_var = tk.BooleanVar(value=False)  # 保留變數但不使用
+        self.audio_codec_var.set(DOWNLOADER_AUDIO_CODECS[0])
+        self.dl_quality_var = tk.IntVar(value=30)
+        self.dl_low_vram_var = tk.BooleanVar(value=False)
+        # 保留空的 start/end time 變數以相容 DownloadJob
+        self.start_time_entry = type("obj", (object,), {"get": lambda: ""})()
+        self.end_time_entry = type("obj", (object,), {"get": lambda: ""})()
 
         # 提示訊息
         info_label = ttk.Label(
             main_frame,
-            text="💡 下載模式：直接擷取原始影音，不進行任何轉碼處理",
+            text="💡 純下載模式：直接下載原始影音，如需裁切請使用 Clipper 分頁",
             style="Music.Status.TLabel",
         )
         info_label.pack(anchor=tk.W, pady=(0, 10))
@@ -1304,6 +1703,432 @@ class App(tk.Tk):
                 self.re_progress_bar["value"] = 0
                 self.re_status_label.config(text="Status: Re-encoding failed.")
                 messagebox.showerror("Error", message)
+
+    # === Clipper Methods ===
+
+    def browse_clip_input(self):
+        file_path = filedialog.askopenfilename(
+            title="選擇影片檔案",
+            filetypes=[
+                ("影片檔案", "*.mp4 *.mkv *.avi *.mov *.flv *.webm *.ts"),
+                ("所有檔案", "*.*"),
+            ],
+        )
+        if file_path:
+            self.clip_input_entry.delete(0, tk.END)
+            self.clip_input_entry.insert(0, file_path)
+            # Auto-fill output path and filename
+            dir_name = os.path.dirname(file_path)
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            self.clip_output_path_entry.delete(0, tk.END)
+            self.clip_output_path_entry.insert(0, dir_name)
+            self.clip_output_name_entry.delete(0, tk.END)
+            self.clip_output_name_entry.insert(0, f"{base_name}_clip")
+
+    def browse_clip_output(self):
+        dir_path = filedialog.askdirectory(title="選擇輸出目錄")
+        if dir_path:
+            self.clip_output_path_entry.delete(0, tk.END)
+            self.clip_output_path_entry.insert(0, dir_path)
+
+    def start_clip_job(self):
+        input_path = self.clip_input_entry.get()
+        start_time = self.clip_start_entry.get()
+        end_time = self.clip_end_entry.get()
+        output_path = self.clip_output_path_entry.get()
+        output_name = self.clip_output_name_entry.get()
+        clip_mode = self.clip_mode_var.get()
+        container_format = self.clip_format_var.get()
+
+        if not all([input_path, start_time, end_time, output_path, output_name]):
+            messagebox.showerror("錯誤", "請填寫所有必填欄位")
+            return
+
+        if not os.path.exists(input_path):
+            messagebox.showerror("錯誤", f"輸入檔案不存在: {input_path}")
+            return
+
+        self.cl_controller = TaskController()
+
+        job = ClipJob(
+            input_path=input_path,
+            start_time=start_time,
+            end_time=end_time,
+            output_path=output_path,
+            output_filename=output_name,
+            clip_mode=clip_mode,
+            container_format=container_format,
+            progress_hook=lambda d: self.after(0, self.update_clip_status, d),
+            task_controller=self.cl_controller,
+        )
+
+        self.current_cl_job = job
+        self.clipper_queue.put(job)
+
+        # Update UI
+        self.clip_start_btn.config(state=tk.DISABLED)
+        self.clip_pause_btn.config(state=tk.NORMAL)
+        self.clip_stop_btn.config(state=tk.NORMAL)
+        self.clip_progress_bar.start(10)
+        self.clip_status_label.config(text="狀態：處理中...")
+
+    def process_clipper_queue(self):
+        while True:
+            job = self.clipper_queue.get()
+            try:
+                success, message = start_clip(job)
+                self.after(0, self.on_clip_finish, success, message)
+            except Exception as e:
+                self.after(0, self.on_clip_finish, False, str(e))
+            self.clipper_queue.task_done()
+
+    def update_clip_status(self, d):
+        status = d.get("status", "")
+        info = d.get("info", "")
+        self.clip_status_label.config(text=f"狀態：{info}")
+
+    def on_clip_finish(self, success, message):
+        self.clip_progress_bar.stop()
+        self.clip_start_btn.config(state=tk.NORMAL)
+        self.clip_pause_btn.config(state=tk.DISABLED)
+        self.clip_stop_btn.config(state=tk.DISABLED)
+        self.cl_controller = None
+        self.current_cl_job = None
+
+        if success:
+            self.clip_progress_bar["value"] = 100
+            self.clip_status_label.config(text="狀態：裁切完成！")
+            messagebox.showinfo("成功", message)
+        else:
+            self.clip_progress_bar["value"] = 0
+            if "停止" in message:
+                self.clip_status_label.config(text="狀態：已停止")
+            else:
+                self.clip_status_label.config(text=f"狀態：失敗 - {message}")
+                messagebox.showerror("錯誤", message)
+
+    def toggle_clip_pause(self):
+        if self.cl_controller:
+            if self.cl_controller.pause_event.is_set():
+                self.cl_controller.resume()
+                self.clip_pause_btn.config(text="⏸ 暫停")
+            else:
+                self.cl_controller.pause()
+                self.clip_pause_btn.config(text="▶ 繼續")
+
+    def stop_clip(self):
+        if self.cl_controller:
+            self.cl_controller.stop()
+            self.clip_stop_btn.config(state=tk.DISABLED)
+            self.clip_status_label.config(text="狀態：正在停止...")
+
+    # === Editor Methods ===
+
+    def editor_load_video(self):
+        """載入影片到編輯器"""
+        file_path = filedialog.askopenfilename(
+            title="選擇影片檔案",
+            filetypes=[
+                ("影片檔案", "*.mp4 *.mkv *.avi *.mov *.flv *.webm *.ts"),
+                ("所有檔案", "*.*"),
+            ],
+        )
+        if not file_path:
+            return
+
+        try:
+            # 關閉舊的讀取器
+            if self.editor_video_reader:
+                self.editor_video_reader.close()
+
+            # 建立新的讀取器
+            self.editor_video_reader = VideoFrameReader(file_path)
+
+            # 更新 UI
+            filename = os.path.basename(file_path)
+            self.editor_file_label.config(
+                text=f"{filename} ({self.editor_video_reader.width}×{self.editor_video_reader.height})"
+            )
+
+            # 設定時間軸範圍
+            self.editor_timeline.config(to=self.editor_video_reader.duration_ms)
+
+            # 計算預覽縮放比例
+            scale_w = PREVIEW_SIZE[0] / self.editor_video_reader.width
+            scale_h = PREVIEW_SIZE[1] / self.editor_video_reader.height
+            self.editor_preview_scale = min(scale_w, scale_h)
+
+            # 初始化裁切框（置中，預設 200x150）
+            self.editor_crop_w = int(200 / self.editor_preview_scale)
+            self.editor_crop_h = int(150 / self.editor_preview_scale)
+            self.editor_crop_x = (
+                self.editor_video_reader.width - self.editor_crop_w
+            ) // 2
+            self.editor_crop_y = (
+                self.editor_video_reader.height - self.editor_crop_h
+            ) // 2
+
+            # 清除關鍵幀
+            self.editor_keyframe_manager.clear()
+            self.editor_update_keyframe_list()
+
+            # 設定輸出路徑
+            dir_name = os.path.dirname(file_path)
+            base_name = os.path.splitext(filename)[0]
+            self.editor_output_entry.delete(0, tk.END)
+            self.editor_output_entry.insert(
+                0, os.path.join(dir_name, f"{base_name}_edited.mp4")
+            )
+
+            # 顯示第一幀
+            self.editor_current_time_ms = 0
+            self.editor_timeline_var.set(0)
+            self.editor_update_preview()
+
+            self.editor_status_label.config(text="狀態：影片已載入")
+
+        except Exception as e:
+            messagebox.showerror("錯誤", f"載入影片失敗: {e}")
+
+    def editor_update_preview(self):
+        """更新預覽畫面"""
+        if not self.editor_video_reader:
+            return
+
+        # 取得當前幀
+        frame = self.editor_video_reader.get_frame_for_preview(
+            self.editor_current_time_ms, PREVIEW_SIZE
+        )
+
+        if frame:
+            # 轉換為 Tkinter 可用格式
+            self.editor_preview_image = ImageTk.PhotoImage(frame)
+
+            # 清除並重繪 Canvas
+            self.editor_canvas.delete("all")
+
+            # 計算居中位置
+            x_offset = (PREVIEW_SIZE[0] - frame.width) // 2
+            y_offset = (PREVIEW_SIZE[1] - frame.height) // 2
+
+            # 繪製影片幀
+            self.editor_canvas.create_image(
+                x_offset, y_offset, anchor=tk.NW, image=self.editor_preview_image
+            )
+
+            # 繪製裁切框
+            self.editor_draw_crop_rect(x_offset, y_offset)
+
+        # 更新時間標籤
+        current = format_time_short(self.editor_current_time_ms)
+        total = format_time_short(self.editor_video_reader.duration_ms)
+        self.editor_time_label.config(text=f"{current} / {total}")
+
+    def editor_draw_crop_rect(self, x_offset=0, y_offset=0):
+        """繪製裁切框"""
+        # 將原始座標轉換為預覽座標
+        x1 = x_offset + int(self.editor_crop_x * self.editor_preview_scale)
+        y1 = y_offset + int(self.editor_crop_y * self.editor_preview_scale)
+        x2 = x_offset + int(
+            (self.editor_crop_x + self.editor_crop_w) * self.editor_preview_scale
+        )
+        y2 = y_offset + int(
+            (self.editor_crop_y + self.editor_crop_h) * self.editor_preview_scale
+        )
+
+        # 繪製裁切框（霓虹藍色邊框）
+        self.editor_canvas.create_rectangle(
+            x1, y1, x2, y2, outline=self.colors["accent3"], width=2, tags="crop_rect"
+        )
+
+        # 繪製角落控制點
+        for cx, cy in [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]:
+            self.editor_canvas.create_oval(
+                cx - 5,
+                cy - 5,
+                cx + 5,
+                cy + 5,
+                fill=self.colors["accent"],
+                outline=self.colors["accent3"],
+                tags="crop_rect",
+            )
+
+    def editor_on_timeline_change(self, value):
+        """時間軸變更事件"""
+        self.editor_current_time_ms = int(float(value))
+        self.editor_update_preview()
+
+    def editor_on_canvas_click(self, event):
+        """Canvas 點擊事件 - 開始拖動"""
+        self.editor_drag_start = (event.x, event.y)
+
+    def editor_on_canvas_drag(self, event):
+        """Canvas 拖動事件 - 移動裁切框"""
+        if not self.editor_drag_start or not self.editor_video_reader:
+            return
+
+        # 計算位移（轉換為原始座標）
+        dx = int((event.x - self.editor_drag_start[0]) / self.editor_preview_scale)
+        dy = int((event.y - self.editor_drag_start[1]) / self.editor_preview_scale)
+
+        # 更新裁切框位置（限制在影片範圍內）
+        new_x = max(
+            0,
+            min(
+                self.editor_crop_x + dx,
+                self.editor_video_reader.width - self.editor_crop_w,
+            ),
+        )
+        new_y = max(
+            0,
+            min(
+                self.editor_crop_y + dy,
+                self.editor_video_reader.height - self.editor_crop_h,
+            ),
+        )
+
+        self.editor_crop_x = new_x
+        self.editor_crop_y = new_y
+        self.editor_drag_start = (event.x, event.y)
+
+        # 重繪預覽
+        self.editor_update_preview()
+
+    def editor_on_canvas_release(self, event):
+        """Canvas 釋放事件"""
+        self.editor_drag_start = None
+
+    def editor_on_ratio_change(self):
+        """比例變更事件"""
+        ratio_name = self.editor_ratio_var.get()
+        ratio = ASPECT_RATIOS.get(ratio_name)
+
+        if ratio and self.editor_video_reader:
+            # 根據比例調整裁切框大小
+            w, h = ratio
+            # 計算最大可容納的裁切框
+            max_w = self.editor_video_reader.width
+            max_h = self.editor_video_reader.height
+
+            if (max_w / w) * h <= max_h:
+                self.editor_crop_w = max_w
+                self.editor_crop_h = int((max_w / w) * h)
+            else:
+                self.editor_crop_h = max_h
+                self.editor_crop_w = int((max_h / h) * w)
+
+            # 置中
+            self.editor_crop_x = (max_w - self.editor_crop_w) // 2
+            self.editor_crop_y = (max_h - self.editor_crop_h) // 2
+
+            # 更新輸出尺寸
+            self.editor_width_var.set(str(self.editor_crop_w))
+            self.editor_height_var.set(str(self.editor_crop_h))
+
+            self.editor_update_preview()
+
+    def editor_add_keyframe(self):
+        """新增關鍵幀"""
+        if not self.editor_video_reader:
+            messagebox.showwarning("警告", "請先載入影片")
+            return
+
+        crop = CropRegion(
+            x=self.editor_crop_x,
+            y=self.editor_crop_y,
+            width=self.editor_crop_w,
+            height=self.editor_crop_h,
+        )
+
+        self.editor_keyframe_manager.add_keyframe(self.editor_current_time_ms, crop)
+        self.editor_update_keyframe_list()
+        self.editor_status_label.config(
+            text=f"狀態：已新增關鍵幀 @ {format_time_short(self.editor_current_time_ms)}"
+        )
+
+    def editor_remove_keyframe(self):
+        """移除當前時間的關鍵幀"""
+        self.editor_keyframe_manager.remove_keyframe(self.editor_current_time_ms)
+        self.editor_update_keyframe_list()
+
+    def editor_clear_keyframes(self):
+        """清除所有關鍵幀"""
+        if messagebox.askyesno("確認", "確定要清除所有關鍵幀嗎？"):
+            self.editor_keyframe_manager.clear()
+            self.editor_update_keyframe_list()
+
+    def editor_update_keyframe_list(self):
+        """更新關鍵幀列表顯示"""
+        if not self.editor_keyframe_manager.keyframes:
+            self.editor_keyframe_list.config(text="尚未設定關鍵幀")
+        else:
+            times = [
+                format_time_short(kf.time_ms)
+                for kf in self.editor_keyframe_manager.keyframes
+            ]
+            self.editor_keyframe_list.config(text=f"關鍵幀: {', '.join(times)}")
+
+    def editor_browse_output(self):
+        """選擇輸出檔案路徑"""
+        file_path = filedialog.asksaveasfilename(
+            title="儲存影片",
+            defaultextension=".mp4",
+            filetypes=[
+                ("MP4 檔案", "*.mp4"),
+                ("MKV 檔案", "*.mkv"),
+                ("所有檔案", "*.*"),
+            ],
+        )
+        if file_path:
+            self.editor_output_entry.delete(0, tk.END)
+            self.editor_output_entry.insert(0, file_path)
+
+    def editor_export(self):
+        """匯出影片"""
+        if not self.editor_video_reader:
+            messagebox.showwarning("警告", "請先載入影片")
+            return
+
+        if not self.editor_keyframe_manager.keyframes:
+            messagebox.showwarning("警告", "請至少設定一個關鍵幀")
+            return
+
+        output_path = self.editor_output_entry.get()
+        if not output_path:
+            messagebox.showwarning("警告", "請指定輸出路徑")
+            return
+
+        try:
+            output_width = int(self.editor_width_var.get())
+            output_height = int(self.editor_height_var.get())
+        except ValueError:
+            messagebox.showerror("錯誤", "輸出尺寸必須是數字")
+            return
+
+        self.editor_status_label.config(text="狀態：匯出中...")
+        self.update_idletasks()
+
+        # 在背景執行匯出
+        def do_export():
+            success, message = export_video_with_keyframes(
+                input_path=self.editor_video_reader.video_path,
+                output_path=output_path,
+                keyframe_manager=self.editor_keyframe_manager,
+                output_width=output_width,
+                output_height=output_height,
+            )
+            self.after(0, self.editor_on_export_finish, success, message)
+
+        threading.Thread(target=do_export, daemon=True).start()
+
+    def editor_on_export_finish(self, success, message):
+        """匯出完成回調"""
+        if success:
+            self.editor_status_label.config(text="狀態：匯出完成！")
+            messagebox.showinfo("成功", message)
+        else:
+            self.editor_status_label.config(text=f"狀態：匯出失敗")
+            messagebox.showerror("錯誤", message)
 
 
 if __name__ == "__main__":
