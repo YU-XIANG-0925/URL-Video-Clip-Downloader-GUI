@@ -23,40 +23,45 @@ def _run_ffmpeg_command(
     progress_callback=None,
     task_controller: TaskController = None,
     low_vram: bool = False,
-    quality: int = 30,
+    quality: int = 26,
 ):
     command = ["ffmpeg", "-i", input_file]
 
     if video_codec == BEST_CODEC_LABEL:
         # Best settings: HEVC NVENC, Preset P7 (Best Quality), CQ {quality}, Audio Copy
         # Adjusted CQ based on user input or default 30
-        cq_value = str(quality) if quality is not None else "30"
+        cq_value = str(quality) if quality is not None else "26"
         command.extend(
             ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", cq_value, "-c:a", "copy"]
         )
     elif video_codec == STREAMING_CODEC_LABEL:
-        # 串流優化設定: HEVC NVENC, Preset P6, VBR, 目標碼率 4M, 最大碼率 6M, Buffer 8M
-        # 音頻 AAC 128kbps, 加入 faststart 以優化串流播放
-        # 使用傳入的 quality 參數作為 CQ 值（預設應設為 26）
-        cq_value = str(quality) if quality is not None else "26"
+        # 串流優化設定: HEVC NVENC, Preset P5, Constant QP 模式
+        # 啟用 B-frame + Lookahead + AQ 以達到最佳壓縮效率與速度平衡
+        qp_value = str(quality) if quality is not None else "30"
         command.extend(
             [
                 "-c:v",
                 "hevc_nvenc",
                 "-preset",
-                "p6",
+                "p5",  # 速度/品質平衡點
                 "-tune",
                 "hq",
                 "-rc",
-                "vbr",
-                "-cq",
-                cq_value,
+                "constqp",  # 恆定品質模式
+                "-qp",
+                qp_value,  # QP 值（預設 30，適合 1080p）
                 "-b:v",
-                "4M",
-                "-maxrate",
-                "6M",
-                "-bufsize",
-                "8M",
+                "0",  # 不限制碼率
+                "-bf",
+                "4",  # 啟用 4 個 B-frame（提升壓縮 10-15%）
+                "-b_ref_mode",
+                "middle",  # B-frame 參考模式
+                "-spatial-aq",
+                "1",  # 空間自適應量化（改善畫質）
+                "-temporal-aq",
+                "1",  # 時間自適應量化（改善動態場景）
+                "-rc-lookahead",
+                "32",  # 前瞻分析 32 幀（更好的碼率分配）
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -192,7 +197,7 @@ def reencode_video(
     task_controller: TaskController = None,
     low_vram: bool = False,
     recycle_original: bool = False,
-    quality: int = 30,
+    quality: int = 26,
 ):
     if mode == "single":
         if not output_filename:

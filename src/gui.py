@@ -979,7 +979,7 @@ class App(tk.Tk):
             if selected == BEST_CODEC_LABEL:
                 self.re_quality_var.set(30)
             elif selected == STREAMING_CODEC_LABEL:
-                self.re_quality_var.set(26)  # 串流優化預設 CQ 26
+                self.re_quality_var.set(30)  # 串流優化預設 QP 30（最佳壓縮）
 
         self.re_video_codec_var.trace_add("write", on_codec_change)
 
