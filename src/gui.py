@@ -1197,8 +1197,8 @@ class App(tk.Tk):
         self.dl_quality_var = tk.IntVar(value=30)
         self.dl_low_vram_var = tk.BooleanVar(value=False)
         # 保留空的 start/end time 變數以相容 DownloadJob
-        self.start_time_entry = type("obj", (object,), {"get": lambda: ""})()
-        self.end_time_entry = type("obj", (object,), {"get": lambda: ""})()
+        self.start_time_entry = type("obj", (object,), {"get": lambda self: ""})()
+        self.end_time_entry = type("obj", (object,), {"get": lambda self: ""})()
 
         # 提示訊息
         info_label = ttk.Label(

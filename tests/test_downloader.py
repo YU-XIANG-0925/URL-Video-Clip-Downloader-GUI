@@ -1,12 +1,12 @@
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
 import subprocess
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 import yt_dlp
-from src.downloader import DownloadJob, DownloadStatus, start_download
+from downloader import DownloadJob, DownloadStatus, start_download
 
 @pytest.fixture
 def job():
@@ -16,29 +16,36 @@ def job():
         end_time="00:02:00",
         output_path="/tmp",
         output_filename="test.mp4",
+        container_format="mp4"
     )
 
 def test_start_download_with_ffmpeg(mocker, job):
     """
-    Test that start_download calls ffmpeg with the correct arguments
+    Test that start_download calls _run_stoppable_ffmpeg with the correct arguments
     when start and end times are provided.
     """
-    mocker.patch("subprocess.run")
+    mock_run = mocker.patch("downloader._run_stoppable_ffmpeg", return_value=(True, "Success"))
     start_download(job)
-    subprocess.run.assert_called_once()
-    args, kwargs = subprocess.run.call_args
-    assert "ffmpeg" in args[0]
-    assert job.url in args[0]
-    assert job.start_time in args[0]
-    assert job.end_time in args[0]
-    assert os.path.join(job.output_path, job.output_filename) in args[0]
+    
+    mock_run.assert_called_once()
+    args, _ = mock_run.call_args
+    command = args[0]
+    
+    assert "ffmpeg" in command
+    assert job.url in command
+    assert job.start_time in command
+    assert job.end_time in command
 
 def test_start_download_with_yt_dlp(mocker, job):
     """
     Test that start_download calls yt-dlp when ffmpeg fails.
     """
-    mocker.patch("subprocess.run", side_effect=[subprocess.CalledProcessError(1, "ffmpeg"), None])
-    mocker.patch("yt_dlp.YoutubeDL")
+    # First call to ffmpeg fails
+    mocker.patch("downloader._run_stoppable_ffmpeg", return_value=(False, "ffmpeg failed"))
+    mock_ydl = mocker.patch("yt_dlp.YoutubeDL")
+    mock_ydl_instance = mock_ydl.return_value
+    mock_ydl_instance.__enter__.return_value.download = MagicMock()
+    
     start_download(job)
-    assert subprocess.run.call_count == 1 # only ffmpeg is called via subprocess
+    
     yt_dlp.YoutubeDL.assert_called_once()

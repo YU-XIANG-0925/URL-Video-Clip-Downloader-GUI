@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import subprocess
 import yt_dlp
+from yt_dlp.utils import sanitize_filename
 import os
 from typing import Callable
 import datetime
@@ -110,6 +111,8 @@ def start_download(job: DownloadJob):
     job.status = DownloadStatus.DOWNLOADING
     if job.progress_hook:
         job.progress_hook({"status": "downloading", "info": "Starting process..."})
+
+    job.output_filename = sanitize_filename(job.output_filename)
 
     # Construct filename with correct extension based on container format
     container_ext = job.container_format if job.container_format else "mp4"
